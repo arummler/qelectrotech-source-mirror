@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/with-checkout@v4
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
@@ -24,38 +24,42 @@ jobs:
         with:
           arch: x64
 
-      # 1.5 Explicitly setup Ninja so vcpkg and CMake can see it in PATH
-      - name: Set up Ninja
-        uses: seanmiddleditch/gha-setup-ninja@master
-
-      # 2. Install Qt6
+      # 2. Install Qt6 (Adjust version and modules as needed)
       - name: Install Qt6
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.10.0'
+          version: '6.10.0' # Specify your required Qt6 version
           host: 'windows'
           target: 'desktop'
-          arch: 'win64_msvc2022_64'
-          cache: true
+          arch: 'win64_msvc2022_64' # Matches MSVC compiler architecture
+          cache: true # Caches the installation to speed up subsequent runs
           
       # 2.5 SQLite3         
       - name: Install SQLite3 via vcpkg
         run: vcpkg install sqlite3:x64-windows
         
-      # 3. Configure and Build using Modern CMake Flags (No folder jumping required)
+      # 3. Configure and Build using Native CMake Steps
       - name: Build with CMake
         shell: pwsh
         run: |
-          # Use modern CMake -S (source) and -B (build) flags instead of manually making directories
-          cmake -G "Ninja" `
-            -S . `
-            -B build `
+          # Use env variable for parallel jobs
+          $env:NUMBER_OF_PROCESSORS = (Get-CimInstance Win32_ComputerSystem).NumberOfProcessors
+          Write-Host "Available CPUs: $env:NUMBER_OF_PROCESSORS"
+          
+          # Create and enter build directory
+          New-Item -ItemType Directory -Force -Path build
+          Set-Location build
+          
+          # Configure CMake with MSVC and Ninja
+          cmake -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
             -DQT_VERSION_MAJOR=6 `
             -DBUILD_WITH_KF=OFF `
             -DPACKAGE_TESTS=OFF `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            ..
             
-          # Build using the generated build folder. CMake handles parallel jobs automatically.
-          cmake --build build --parallel
+          # Build using Ninja
+          cmake --build . --parallel $env:NUMBER_OF_PROCESSORS
+
