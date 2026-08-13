@@ -13,53 +13,69 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      # 1. Set up MSVC Developer Command Prompt
-      - uses: TheMrMilchmann/setup-msvc-dev@v4
+      - name: Set up MSVC 2022
+        uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+          vsversion: 2022
 
-      # 2. Install Qt6 (Adjust version and modules as needed)
-      - name: Install Qt6
+      - name: Install Qt 6
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.10.0' # Specify your required Qt6 version
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win64_msvc2022_64' # Matches MSVC compiler architecture
-          cache: true # Caches the installation to speed up subsequent runs
-          
-      # 2.5 SQLite3         
-      - name: Install SQLite3 via vcpkg
-        run: vcpkg install sqlite3:x64-windows
-        
-      # 3. Configure and Build using Native CMake Steps
-      - name: Build with CMake
+          version: '6.10.0'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Locate or install Ninja
         shell: pwsh
         run: |
-          # Use env variable for parallel jobs
-          $env:NUMBER_OF_PROCESSORS = (Get-CimInstance Win32_ComputerSystem).NumberOfProcessors
-          Write-Host "Available CPUs: $env:NUMBER_OF_PROCESSORS"
-          
-          # Create and enter build directory
-          New-Item -ItemType Directory -Force -Path build
-          Set-Location build
-          
-          # Configure CMake with MSVC and Ninja
-          cmake -G "Visual Studio 17 2022" -A x64 `
+          $ninja = Get-Command ninja.exe -ErrorAction SilentlyContinue
+
+          if ($ninja) {
+            $ninjaPath = $ninja.Source
+          }
+          else {
+            choco install ninja --yes --no-progress
+            $ninjaPath = Join-Path $env:ChocolateyInstall "bin\ninja.exe"
+          }
+
+          if (-not (Test-Path $ninjaPath)) {
+            throw "Ninja could not be located or installed."
+          }
+
+          & $ninjaPath --version
+          "NINJA_EXE=$ninjaPath" >> $env:GITHUB_ENV
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          Write-Host "MSVC:"
+          where.exe cl
+          cl 2>&1 | Select-Object -First 3
+
+          Write-Host "Ninja: $env:NINJA_EXE"
+          & $env:NINJA_EXE --version
+
+          cmake `
+            -S . `
+            -B build `
+            -G Ninja `
+            -DCMAKE_MAKE_PROGRAM="$env:NINJA_EXE" `
             -DCMAKE_BUILD_TYPE=Release `
-            -DQT_VERSION_MAJOR=6 `
-            -DBUILD_WITH_KF=OFF `
-            -DPACKAGE_TESTS=OFF `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows `
-            ..
-            
-          # Build using Ninja
-          cmake --build . --parallel $env:NUMBER_OF_PROCESSORS
+            -DQT_VERSION_MAJOR=6 `
+            -DBUILD_WITH_KF=OFF `
+            -DPACKAGE_TESTS=OFF
 
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build build --parallel
