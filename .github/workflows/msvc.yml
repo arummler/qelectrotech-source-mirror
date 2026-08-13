@@ -1,0 +1,40 @@
+name: MSVC
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-qt6:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build with cmake
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir build && cd build
+          NPROC=$(nproc)
+          echo "Available CPUs: $NPROC"
+
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQT_VERSION_MAJOR=6 \
+            -DBUILD_WITH_KF=OFF \
+            -DPACKAGE_TESTS=OFF \
+            ..
+          ninja -j"$NPROC"
+
+
