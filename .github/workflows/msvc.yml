@@ -20,17 +20,18 @@ jobs:
           fetch-depth: 0
 
       # 1. Set up MSVC Developer Command Prompt
-      - name: Set up MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
 
       # 2. Install Qt6 (Adjust version and modules as needed)
       - name: Install Qt6
-        uses: jurplel/install-qt-action@v3
+        uses: jurplel/install-qt-action@v4
         with:
           version: '6.10.0' # Specify your required Qt6 version
           host: 'windows'
           target: 'desktop'
-          arch: 'win64_msvc2019_64' # Matches MSVC compiler architecture
+          arch: 'win64_msvc2022_64' # Matches MSVC compiler architecture
           cache: true # Caches the installation to speed up subsequent runs
 
       # 3. Configure and Build using Native CMake Steps
