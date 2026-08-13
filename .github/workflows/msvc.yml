@@ -1,10 +1,8 @@
 name: MSVC
-
 on:
   pull_request:
   push:
     branches: [master]
-
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -13,28 +11,48 @@ concurrency:
 jobs:
   build-windows-qt6:
     runs-on: windows-latest
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Build with cmake
-        shell: msys2 {0}
+      # 1. Set up MSVC Developer Command Prompt
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # 2. Install Qt6 (Adjust version and modules as needed)
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.10.0' # Specify your required Qt6 version
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2019_64' # Matches MSVC compiler architecture
+          cache: true # Caches the installation to speed up subsequent runs
+
+      # 3. Configure and Build using Native CMake Steps
+      - name: Build with CMake
+        shell: pwsh
         run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-          mkdir build && cd build
-          NPROC=$(nproc)
-          echo "Available CPUs: $NPROC"
-
-          cmake -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DQT_VERSION_MAJOR=6 \
-            -DBUILD_WITH_KF=OFF \
-            -DPACKAGE_TESTS=OFF \
+          # Use env variable for parallel jobs
+          $env:NUMBER_OF_PROCESSORS = (Get-CimInstance Win32_ComputerSystem).NumberOfProcessors
+          Write-Host "Available CPUs: $env:NUMBER_OF_PROCESSORS"
+          
+          # Create and enter build directory
+          New-Item -ItemType Directory -Force -Path build
+          Set-Location build
+          
+          # Configure CMake with MSVC and Ninja
+          cmake -G "Ninja" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DQT_VERSION_MAJOR=6 `
+            -DBUILD_WITH_KF=OFF `
+            -DPACKAGE_TESTS=OFF `
             ..
-          ninja -j"$NPROC"
-
+            
+          # Build using Ninja
+          cmake --build . --parallel $env:NUMBER_OF_PROCESSORS
 
