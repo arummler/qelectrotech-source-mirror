@@ -33,6 +33,11 @@ jobs:
           target: 'desktop'
           arch: 'win64_msvc2022_64' # Matches MSVC compiler architecture
           cache: true # Caches the installation to speed up subsequent runs
+          
+      # 2.5 SQLite3         
+      - name: Install SQLite3 via vcpkg
+        run: vcpkg install sqlite3:x64-windows
+
 
       # 3. Configure and Build using Native CMake Steps
       - name: Build with CMake
