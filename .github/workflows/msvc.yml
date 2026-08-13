@@ -37,8 +37,7 @@ jobs:
       # 2.5 SQLite3         
       - name: Install SQLite3 via vcpkg
         run: vcpkg install sqlite3:x64-windows
-
-
+        
       # 3. Configure and Build using Native CMake Steps
       - name: Build with CMake
         shell: pwsh
@@ -57,6 +56,8 @@ jobs:
             -DQT_VERSION_MAJOR=6 `
             -DBUILD_WITH_KF=OFF `
             -DPACKAGE_TESTS=OFF `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
             ..
             
           # Build using Ninja
