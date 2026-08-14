@@ -53,4 +53,5 @@ jobs:
             "-DVCPKG_TARGET_TRIPLET=x64-windows"
           )
           cmake @cmakeArgs
+          cmake --build $buildDir
 
