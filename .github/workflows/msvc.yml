@@ -13,69 +13,43 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
+          path: source
 
-      - name: Set up MSVC 2022
+      - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-          vsversion: 2022
 
-      - name: Install Qt 6
+      - name: Install Qt (MSVC)
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.10.0'
-          host: windows
-          target: desktop
-          arch: win64_msvc2022_64
-          cache: true
-
-      - name: Locate or install Ninja
+          version: '6.8.*'
+          arch: 'win64_msvc2022_64'
+          
+      # 2.5 SQLite3         
+      - name: Install SQLite3 via vcpkg
+        run: vcpkg install sqlite3:x64-windows
+        
+      # 3. Configure and Build using Native CMake Steps
+      - name: Configure and build
         shell: pwsh
         run: |
-          $ninja = Get-Command ninja.exe -ErrorAction SilentlyContinue
+          $sourceDir = "${{ github.workspace }}\source"
+          $buildDir = "${{ github.workspace }}\build"
 
-          if ($ninja) {
-            $ninjaPath = $ninja.Source
-          }
-          else {
-            choco install ninja --yes --no-progress
-            $ninjaPath = Join-Path $env:ChocolateyInstall "bin\ninja.exe"
-          }
-
-          if (-not (Test-Path $ninjaPath)) {
-            throw "Ninja could not be located or installed."
-          }
-
-          & $ninjaPath --version
-          "NINJA_EXE=$ninjaPath" >> $env:GITHUB_ENV
-
-      - name: Configure
-        shell: pwsh
-        run: |
-          Write-Host "MSVC:"
-          where.exe cl
-          cl 2>&1 | Select-Object -First 3
-
-          Write-Host "Ninja: $env:NINJA_EXE"
-          & $env:NINJA_EXE --version
-
-          cmake `
-            -S . `
-            -B build `
-            -G Ninja `
-            -DCMAKE_MAKE_PROGRAM="$env:NINJA_EXE" `
+          cmake -S $sourceDir -B $buildDir -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows `
             -DQT_VERSION_MAJOR=6 `
             -DBUILD_WITH_KF=OFF `
-            -DPACKAGE_TESTS=OFF
+            -DBUILD_TESTING=OFF `
+            -DCMAKE_POLICY_DEFAULT_CMP0077=NEW `
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows 
 
-      - name: Build
-        shell: pwsh
-        run: |
-          cmake --build build --parallel
+          cmake --build $buildDir --config Release -j
+
+
