@@ -231,7 +231,7 @@ endif()
 
 install(TARGETS ${PROJECT_NAME})
 
-if ((NOT MINGW)ANDNOT(WIN32))
+if ((NOT MINGW) AND (NOT WIN32))
     install(DIRECTORY ico/breeze-icons/16x16   DESTINATION ${QET_ICONS_PATH})
     install(DIRECTORY ico/breeze-icons/22x22   DESTINATION ${QET_ICONS_PATH})
     install(DIRECTORY ico/breeze-icons/32x32   DESTINATION ${QET_ICONS_PATH})
