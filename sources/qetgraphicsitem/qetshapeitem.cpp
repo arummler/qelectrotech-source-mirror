@@ -119,6 +119,20 @@ void QetShapeItem::setP2(const QPointF &P2)
 		prepareGeometryChange();
 		m_P2 = P2;
 	}
+	else
+	{
+		return; // nothing actually changed
+	}
+	// setP2() is what drives the live "second point under the cursor"
+	// preview while a new shape is being drawn (see
+	// diagrameventaddshape.cpp) -- every other geometry setter already
+	// keeps the pivot following the center until it's customized; this
+	// one was missing it, which is why a freshly click-and-dragged shape
+	// could end up with its pivot frozen at the very first click point
+	// (a degenerate, zero-size starting rect/line) instead of the
+	// shape's actual center once it was drawn out.
+	if (!m_pivotIsCustom)
+		resetPivotToBoundingRectCenter();
 }
 
 /**
