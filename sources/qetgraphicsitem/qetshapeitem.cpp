@@ -334,12 +334,26 @@ void QetShapeItem::resetPivotToBoundingRectCenter()
 	this is the whole answer to "how do I turn an arc back into a closed
 	ellipse": there is no separate Arc type to convert out of.
 */
+// Dragging one endpoint until it nearly touches the other closes the
+// ellipse back up -- checked on the *geometric* (mod 360) proximity of
+// the two angles, not the raw stored span, since dragArcEndpoint()
+// deliberately keeps the raw span continuous/unwrapped (it can legally
+// exceed +-360 during a drag) rather than snapping it into a fixed
+// range on every frame.
+static bool anglesGeometricallyAdjacent(qreal span)
+{
+	qreal wrapped = std::fmod(span, 360.0);
+	if (wrapped < 0) wrapped += 360.0;
+	return wrapped < 5.0 || wrapped > 355.0;
+}
+
 void QetShapeItem::setStartAngle(qreal degrees)
 {
 	if (qFuzzyCompare(m_startAngle, degrees)) return;
 	prepareGeometryChange();
 	m_startAngle = degrees;
-	if (qAbs(spanAngle()) >= 355.0) { m_startAngle = 0; m_endAngle = 360; }
+	if (anglesGeometricallyAdjacent(spanAngle())) { m_startAngle = 0; m_endAngle = 360; }
+	repositionHandles();
 	emit arcChanged();
 }
 
@@ -348,7 +362,8 @@ void QetShapeItem::setEndAngle(qreal degrees)
 	if (qFuzzyCompare(m_endAngle, degrees)) return;
 	prepareGeometryChange();
 	m_endAngle = degrees;
-	if (qAbs(spanAngle()) >= 355.0) { m_startAngle = 0; m_endAngle = 360; }
+	if (anglesGeometricallyAdjacent(spanAngle())) { m_startAngle = 0; m_endAngle = 360; }
+	repositionHandles();
 	emit arcChanged();
 }
 
@@ -841,6 +856,10 @@ QPointF QetShapeItem::rotateHandleReference(int slot) const
 {
 	if (m_shapeType == Line)
 		return (slot == 0) ? m_P1 : m_P2;
+	if (m_shapeType == Polygon)
+		return m_polygon.value(slot);
+	if (m_shapeType == Path)
+		return (slot < m_nodes.size()) ? m_nodes.at(slot).anchor : QPointF();
 	return cornerPoint(localRect(), slot);
 }
 
@@ -1002,17 +1021,35 @@ void QetShapeItem::rebuildHandles()
 			break;
 
 		case Polygon:
-			for (int i = 0; i < m_polygon.size(); ++i)
-				addRole(HandleRole::PathAnchor, i);
-			if (m_handleMode == HandleMode::RotateSkew)
+			if (m_handleMode == HandleMode::Size)
+			{
+				for (int i = 0; i < m_polygon.size(); ++i)
+					addRole(HandleRole::PathAnchor, i);
+			}
+			else // RotateSkew: any vertex can be dragged to rotate the
+			     // whole polygon around the pivot; skewing doesn't have
+			     // an obvious "which edge" convention for an arbitrary
+			     // vertex count the way it does for a rectangle's 4
+			     // fixed edges, so it's left out here too.
+			{
+				for (int i = 0; i < m_polygon.size(); ++i)
+					addRole(HandleRole::Rotate, i);
 				addRole(HandleRole::Pivot, 0);
+			}
 			break;
 
 		case Path:
-			for (int i = 0; i < m_nodes.size(); ++i)
-				addRole(HandleRole::PathAnchor, i);
-			if (m_handleMode == HandleMode::RotateSkew)
+			if (m_handleMode == HandleMode::Size)
+			{
+				for (int i = 0; i < m_nodes.size(); ++i)
+					addRole(HandleRole::PathAnchor, i);
+			}
+			else
+			{
+				for (int i = 0; i < m_nodes.size(); ++i)
+					addRole(HandleRole::Rotate, i);
 				addRole(HandleRole::Pivot, 0);
+			}
 			break;
 	}
 
@@ -1332,7 +1369,18 @@ void QetShapeItem::dragArcEndpoint(int which, const QPointF &localPos, Qt::Keybo
 {
 	const QRectF r = localRect();
 	const QPointF center = r.center();
-	qreal angle = -qRadiansToDegrees(qAtan2(localPos.y() - center.y(), localPos.x() - center.x()));
+	const qreal rawAngle = -qRadiansToDegrees(qAtan2(localPos.y() - center.y(), localPos.x() - center.x()));
+
+	// atan2's principal value jumps by 360 degrees at the +-180 degree
+	// crossing even though the mouse only moved a hair -- unwrap it
+	// relative to this endpoint's own previous value (the smallest
+	// equivalent delta) so the stored angle, and therefore the rendered
+	// arc, changes continuously through that crossing instead of
+	// flipping to its complementary half.
+	const qreal previous = (which == 0) ? m_startAngle : m_endAngle;
+	qreal delta = std::fmod(rawAngle - previous + 540.0, 360.0) - 180.0;
+	qreal angle = previous + delta;
+
 	if (mods & Qt::ShiftModifier)
 		angle = qRound(angle / 15.0) * 15.0;
 	which == 0 ? setStartAngle(angle) : setEndAngle(angle);
