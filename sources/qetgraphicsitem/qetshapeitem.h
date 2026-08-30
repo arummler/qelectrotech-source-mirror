@@ -94,6 +94,11 @@ class QetShapeItem : public QetGraphicsItem
 			NodeKind kind = NodeKind::Corner;
 			std::optional<QPointF> inHandle;
 			std::optional<QPointF> outHandle;
+
+			bool operator==(const PathNode &other) const {
+				return anchor == other.anchor && kind == other.kind
+					&& inHandle == other.inHandle && outHandle == other.outHandle;
+			}
 		};
 
 		// Orthogonal to ShapeType: which handle set is currently shown.
@@ -214,6 +219,7 @@ class QetShapeItem : public QetGraphicsItem
 		void hoverEnterEvent (QGraphicsSceneHoverEvent *event) override;
 		void hoverLeaveEvent (QGraphicsSceneHoverEvent *event) override;
 		void mousePressEvent (QGraphicsSceneMouseEvent *event) override;
+		void mouseDoubleClickEvent (QGraphicsSceneMouseEvent *event) override;
 		QVariant itemChange(
 				GraphicsItemChange change,
 				const QVariant &value) override;
@@ -247,6 +253,7 @@ class QetShapeItem : public QetGraphicsItem
 		void dragArcEndpoint (int which,       const QPointF &localPos, Qt::KeyboardModifiers mods);
 		void dragCornerRadius(int which,       const QPointF &localPos);
 		void dragPathAnchor  (int which,       const QPointF &localPos);
+		void dragPathControlHandle(bool isOutHandle, int nodeIndex, const QPointF &localPos, Qt::KeyboardModifiers mods);
 
 		void promoteRectangleOrEllipseToPolygon(int detachedResizeIndex, const QPointF &newLocalPos);
 		QDomElement snapshotXml() const;   // helper for PromoteShapeCommand: toXml() into a throwaway document
@@ -300,5 +307,8 @@ class QetShapeItem : public QetGraphicsItem
 		bool             m_deferHandleReposition = false;   // true while setPivot() is applying its two related updates together
 
 		QVector<PathNode> m_nodes;
+		bool             m_nodeEditMode = false;   // Path only, toggled by double-click; reveals the active node's control handles
+		int              m_activeNode = 0;         // which node's control handles are shown/editable in node-edit mode
+		QVector<PathNode> m_old_nodes;              // saved at handle press, for undo
 };
 #endif // QETSHAPEITEM_H

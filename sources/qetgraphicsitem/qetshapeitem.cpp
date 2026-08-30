@@ -377,13 +377,11 @@ void QetShapeItem::setArcClosure(ArcClosure closure)
 
 /**
 	@brief QetShapeItem::setPathNodes
-	Replace the node list of a Path shape. Interactive dragging of
-	individual anchors is wired up below (dragPathAnchor(), same as
-	Polygon); dragging a node's Bezier control handles is the deliberately
-	deferred next slice of this feature -- the data model, XML and
-	rendering are all in place for it (see outline()), only its own
-	handle roles (PathControlIn/PathControlOut) are not yet built by
-	rebuildHandles().
+	Replace the node list of a Path shape. Interactive editing of anchors
+	and control handles both go through the handle roles built by
+	rebuildHandles() (PathAnchor always visible; PathControlIn/Out for
+	the active node once double-click enters node-edit mode) -- this
+	setter itself is just the plain data replacement underneath that.
 */
 void QetShapeItem::setPathNodes(const QVector<PathNode> &nodes)
 {
@@ -642,6 +640,20 @@ void QetShapeItem::mousePressEvent(QGraphicsSceneMouseEvent *event)
 	}
 }
 
+void QetShapeItem::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event)
+{
+	if (m_shapeType == Path)
+	{
+		m_nodeEditMode = !m_nodeEditMode;
+		if (m_nodeEditMode)
+			m_activeNode = 0;
+		rebuildHandles();
+		event->accept();
+		return;
+	}
+	QetGraphicsItem::mouseDoubleClickEvent(event);
+}
+
 /**
 	@brief QetShapeItem::itemChange
 	@param change
@@ -667,6 +679,7 @@ QVariant QetShapeItem::itemChange(QGraphicsItem::GraphicsItemChange change,
 				m_handleSlot.clear();
 			}
 			m_handleMode = HandleMode::Size;
+			m_nodeEditMode = false;
 		}
 	}
 	else if (change == ItemPositionHasChanged || change == ItemTransformHasChanged) {
@@ -914,10 +927,11 @@ QPointF QetShapeItem::handlePositionFor(HandleRole role, int slot) const
 			return (slot < m_nodes.size()) ? m_nodes.at(slot).anchor : QPointF();
 
 		case HandleRole::PathControlIn:
+			return (slot < m_nodes.size() && m_nodes.at(slot).inHandle)
+					? m_nodes.at(slot).anchor + *m_nodes.at(slot).inHandle : QPointF();
 		case HandleRole::PathControlOut:
-			// Deferred: no handles of this role are created by
-			// rebuildHandles() yet (see setPathNodes()).
-			return QPointF();
+			return (slot < m_nodes.size() && m_nodes.at(slot).outHandle)
+					? m_nodes.at(slot).anchor + *m_nodes.at(slot).outHandle : QPointF();
 	}
 	return QPointF();
 }
@@ -1043,6 +1057,12 @@ void QetShapeItem::rebuildHandles()
 			{
 				for (int i = 0; i < m_nodes.size(); ++i)
 					addRole(HandleRole::PathAnchor, i);
+				if (m_nodeEditMode && m_activeNode < m_nodes.size())
+				{
+					const PathNode &active = m_nodes.at(m_activeNode);
+					if (active.inHandle)  addRole(HandleRole::PathControlIn, m_activeNode);
+					if (active.outHandle) addRole(HandleRole::PathControlOut, m_activeNode);
+				}
 			}
 			else
 			{
@@ -1405,6 +1425,50 @@ void QetShapeItem::dragPathAnchor(int which, const QPointF &localPos)
 }
 
 /**
+	@brief QetShapeItem::dragPathControlHandle
+	Dragging a Bezier control handle. Corner nodes have no linked
+	opposite handle to update. Smooth nodes keep the two handles
+	collinear through the anchor but let each keep its own length
+	(tangent-continuous, magnitude-independent). Symmetric nodes mirror
+	both direction and length exactly. Alt always means "break a normally
+	-linked relationship" in this design -- here, detaching this handle
+	from its mirror, permanently downgrading the node to Corner, exactly
+	the same convention Alt already has on a rectangle's resize corner
+	(see dragResize()).
+*/
+void QetShapeItem::dragPathControlHandle(bool isOutHandle, int nodeIndex, const QPointF &localPos, Qt::KeyboardModifiers mods)
+{
+	if (nodeIndex >= m_nodes.size())
+		return;
+
+	prepareGeometryChange();
+	PathNode &node = m_nodes[nodeIndex];
+	const QPointF newOffset = localPos - node.anchor;
+	auto &dragged  = isOutHandle ? node.outHandle : node.inHandle;
+	auto &mirrored = isOutHandle ? node.inHandle  : node.outHandle;
+	dragged = newOffset;
+
+	if (mods & Qt::AltModifier)
+	{
+		node.kind = NodeKind::Corner;
+	}
+	else if (mirrored && node.kind != NodeKind::Corner)
+	{
+		const qreal len = qSqrt(newOffset.x() * newOffset.x() + newOffset.y() * newOffset.y());
+		if (len > 1e-6)
+		{
+			const QPointF direction(-newOffset.x() / len, -newOffset.y() / len);
+			const QPointF oldMirrored = *mirrored;
+			const qreal keptLength = (node.kind == NodeKind::Symmetric)
+					? len
+					: qSqrt(oldMirrored.x() * oldMirrored.x() + oldMirrored.y() * oldMirrored.y());
+			mirrored = direction * keptLength;
+		}
+	}
+	repositionHandles();
+}
+
+/**
 	@brief QetShapeItem::handlerMousePressEvent
 	@param handlerIndex
 */
@@ -1418,6 +1482,7 @@ void QetShapeItem::handlerMousePressEvent(int handlerIndex)
 	m_old_yRadius = m_yRadius;
 	m_old_transform = m_transform;
 	m_old_pos = pos();
+	m_old_nodes = m_nodes;
 	if(m_xRadius == 0 && m_yRadius == 0) {
 		m_modifie_radius_equaly = true;
 	}
@@ -1453,12 +1518,11 @@ void QetShapeItem::handlerMouseMoveEvent(int handlerIndex, QGraphicsSceneMouseEv
 		case HandleRole::CornerRadius:  dragCornerRadius(slot, new_pos); break;
 		case HandleRole::ArcEndpoint:   dragArcEndpoint(slot, new_pos, mods); break;
 		case HandleRole::PathAnchor:    dragPathAnchor(slot, new_pos); break;
+		case HandleRole::PathControlIn:  dragPathControlHandle(false, slot, new_pos, mods); break;
+		case HandleRole::PathControlOut: dragPathControlHandle(true,  slot, new_pos, mods); break;
 		case HandleRole::Rotate:
 		case HandleRole::SkewEdge:
 			break; // handled above
-		case HandleRole::PathControlIn:
-		case HandleRole::PathControlOut:
-			break; // deferred, see class comment
 	}
 }
 
@@ -1470,6 +1534,7 @@ void QetShapeItem::handlerMouseReleaseEvent(int handlerIndex)
 {
 	m_modifie_radius_equaly = false;
 	const HandleRole role = m_handleRoles.value(handlerIndex, HandleRole::Resize);
+	const int slot = m_handleSlot.value(handlerIndex, 0);
 
 	if (!diagram())
 		return;
@@ -1528,11 +1593,46 @@ void QetShapeItem::handlerMouseReleaseEvent(int handlerIndex)
 
 		case HandleRole::PathAnchor:
 			if (m_shapeType == Polygon && m_polygon != m_old_polygon)
+			{
 				undo = new QPropertyUndoCommand(this, "polygon", m_old_polygon, m_polygon);
+			}
+			else if (m_shapeType == Path && m_nodes != m_old_nodes)
+			{
+				// PathNode/QVector<PathNode> isn't a Q_PROPERTY-friendly
+				// type, so this reuses PromoteShapeCommand's generic
+				// before/after XML snapshot mechanism instead of a
+				// dedicated undo class -- swap in the old nodes just
+				// long enough to snapshot them, then restore.
+				const QVector<PathNode> after = m_nodes;
+				m_nodes = m_old_nodes;
+				const QDomElement before = snapshotXml();
+				m_nodes = after;
+				const QDomElement afterXml = snapshotXml();
+				undo = new PromoteShapeCommand(this, before, afterXml);
+			}
+			// Selecting a different node's anchor while in node-edit mode
+			// reveals *its* control handles -- done here, at release, not
+			// at press: rebuildHandles() destroys and recreates every
+			// handler item, which would pull the rug out from under the
+			// very drag gesture currently in progress if done any earlier.
+			if (m_shapeType == Path && m_nodeEditMode && slot != m_activeNode)
+			{
+				m_activeNode = slot;
+				rebuildHandles();
+			}
 			break;
 
 		case HandleRole::PathControlIn:
 		case HandleRole::PathControlOut:
+			if (m_nodes != m_old_nodes)
+			{
+				const QVector<PathNode> after = m_nodes;
+				m_nodes = m_old_nodes;
+				const QDomElement before = snapshotXml();
+				m_nodes = after;
+				const QDomElement afterXml = snapshotXml();
+				undo = new PromoteShapeCommand(this, before, afterXml);
+			}
 			break;
 	}
 
@@ -1553,6 +1653,14 @@ void QetShapeItem::handlerMouseReleaseEvent(int handlerIndex)
 bool QetShapeItem::fromXml(const QDomElement &e)
 {
 	if (e.tagName() != "shape") return (false);
+
+	// fromXml() is also used to *restore* an already-displayed item's
+	// state (PromoteShapeCommand's undo/redo), not just to populate a
+	// freshly constructed one -- without this, Qt has no way to know the
+	// item's *previous* on-screen bounding rect needs repainting once the
+	// geometry underneath it changes, so the old rendering stays stuck
+	// until something unrelated forces a repaint of that area.
+	prepareGeometryChange();
 
 	is_movable_ = (e.attribute("is_movable").toInt());
 	m_closed = e.attribute("closed", "0").toInt();
@@ -1578,12 +1686,22 @@ bool QetShapeItem::fromXml(const QDomElement &e)
 	}
 	if (m_shapeType == Polygon)
 	{
+		// fromXml() must be safe to call on an already-populated item, not
+		// just a freshly constructed one: PromoteShapeCommand's undo/redo
+		// (and the automatic redo() that QUndoStack::push() performs the
+		// instant a command is pushed) both call it to *restore* a prior
+		// state, on an object that already has geometry in it. Appending
+		// onto whatever is already there -- rather than replacing it --
+		// silently duplicated every point on the very first undo-worthy
+		// edit.
+		m_polygon.clear();
 		for(const QDomElement& de : QET::findInDomElement(e, "points", "point")) {
 			m_polygon << QPointF(de.attribute("x", nullptr).toDouble(), de.attribute("y", nullptr).toDouble());
 		}
 	}
 	else if (m_shapeType == Path)
 	{
+		m_nodes.clear();
 		for (const QDomElement &nodeElement : QET::findInDomElement(e, "nodes", "node"))
 		{
 			PathNode node;
@@ -1638,6 +1756,16 @@ bool QetShapeItem::fromXml(const QDomElement &e)
 	}
 
 	setZValue(e.attribute("z", QString::number(this->zValue())).toDouble());
+
+	// fromXml() can change anything about the shape -- geometry, node
+	// count, even shapeType() itself (undoing a Rectangle->Polygon
+	// promotion) -- so a full rebuild, not just a reposition, is the only
+	// choice that's guaranteed consistent with whatever state was just
+	// restored. Only when selected: an unselected item should have no
+	// handles at all, and this can run on any item in the diagram, not
+	// just the one currently being interacted with.
+	if (isSelected())
+		rebuildHandles();
 
 	return (true);
 }
