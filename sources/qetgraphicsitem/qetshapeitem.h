@@ -255,6 +255,7 @@ class QetShapeItem : public QetGraphicsItem
 		QPainterPath outline() const;   // raw, unstroked path for the current type; shared by shape() and paint()
 		QVector<QPointF> currentHandlePositions() const;   // in m_handleRoles/m_handleSlot order, local coordinates
 		QPointF handlePositionFor(HandleRole role, int slot) const;
+		QPointF rotateHandleReference(int slot) const;   // the point a Rotate handle tracks, before rotation is applied
 		QPointF scaleOnlyOffset(const QPointF &localPoint) const;        // (localPoint - pivot), scaled, in the pre-shear frame
 		QPointF scaleAndShearOffset(const QPointF &localPoint) const;    // same, with current shear also applied -- the pre-rotation frame
 		static QColor colorForHandleRole(HandleRole role);

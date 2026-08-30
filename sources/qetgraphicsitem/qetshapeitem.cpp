@@ -823,6 +823,13 @@ QPointF QetShapeItem::cornerPoint(const QRectF &rect, int cornerIndex)
 	}
 }
 
+QPointF QetShapeItem::rotateHandleReference(int slot) const
+{
+	if (m_shapeType == Line)
+		return (slot == 0) ? m_P1 : m_P2;
+	return cornerPoint(localRect(), slot);
+}
+
 QPointF QetShapeItem::edgeMidpoint(const QRectF &rect, int edgeIndex)
 {
 	switch (edgeIndex & 3)
@@ -854,7 +861,7 @@ QPointF QetShapeItem::handlePositionFor(HandleRole role, int slot) const
 			return QetGraphicsHandlerUtility::pointsForRect(r).value(slot);
 
 		case HandleRole::Rotate:
-			return cornerPoint(r, slot);
+			return rotateHandleReference(slot);
 
 		case HandleRole::SkewEdge:
 			return edgeMidpoint(r, slot);
@@ -944,10 +951,18 @@ void QetShapeItem::rebuildHandles()
 	switch (m_shapeType)
 	{
 		case Line:
-			addRole(HandleRole::Resize, 0);
-			addRole(HandleRole::Resize, 1);
-			if (m_handleMode == HandleMode::RotateSkew)
+			if (m_handleMode == HandleMode::Size)
+			{
+				addRole(HandleRole::Resize, 0);
+				addRole(HandleRole::Resize, 1);
+			}
+			else // RotateSkew: rotate around the pivot; skewing a
+			     // zero-height line isn't a meaningful operation
+			{
+				addRole(HandleRole::Rotate, 0);
+				addRole(HandleRole::Rotate, 1);
 				addRole(HandleRole::Pivot, 0);
+			}
 			break;
 
 		case Rectangle:
@@ -1240,7 +1255,7 @@ void QetShapeItem::dragRotateHandle(int cornerIndex, const QPointF &scenePos, Qt
 	const QPointF scenePivot = pos() + m_transform.pivot;
 	const qreal angleMouse = qRadiansToDegrees(qAtan2(scenePos.y() - scenePivot.y(), scenePos.x() - scenePivot.x()));
 
-	const QPointF reference = scaleAndShearOffset(cornerPoint(localRect(), cornerIndex));
+	const QPointF reference = scaleAndShearOffset(rotateHandleReference(cornerIndex));
 	const qreal angleReference = qRadiansToDegrees(qAtan2(reference.y(), reference.x()));
 
 	qreal angle = angleMouse - angleReference;
