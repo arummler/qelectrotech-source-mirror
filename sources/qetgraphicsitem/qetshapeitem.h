@@ -20,8 +20,10 @@
 
 #include "../QetGraphicsItemModeler/qetgraphicshandleritem.h"
 #include "qetgraphicsitem.h"
+#include "shapetransform.h"
 
 #include <QPen>
+#include <optional>
 
 class QDomElement;
 class QDomDocument;
@@ -30,8 +32,10 @@ class QAction;
 
 /**
 	@brief The QetShapeItem class
-	this class is used to draw a basic shape (line, rectangle, ellipse)
-	into a diagram, that can be saved to .qet file.
+	this class is used to draw a basic shape (line, rectangle, ellipse,
+	polygon or free-form path) into a diagram, that can be saved to a
+	.qet file. Beyond its local geometry, a shape may also carry a
+	rotation/skew/scale (see ShapeTransform) around an arbitrary pivot.
 */
 class QetShapeItem : public QetGraphicsItem
 {
@@ -46,20 +50,78 @@ class QetShapeItem : public QetGraphicsItem
 	Q_PROPERTY(qreal xRadius READ XRadius WRITE setXRadius NOTIFY XRadiusChanged)
 	Q_PROPERTY(qreal yRadius READ YRadius WRITE setYRadius NOTIFY YRadiusChanged)
 
+	// One property per ShapeTransform scalar -- this is what lets a plain
+	// QPropertyUndoCommand(this, "rotation", oldValue, newValue) work for
+	// every handle, exactly like xRadius/yRadius already do for corner
+	// rounding.
+	Q_PROPERTY(qreal rotation READ rotation WRITE setRotation NOTIFY transformChanged)
+	Q_PROPERTY(qreal skewX READ skewX WRITE setSkewX NOTIFY transformChanged)
+	Q_PROPERTY(qreal skewY READ skewY WRITE setSkewY NOTIFY transformChanged)
+	Q_PROPERTY(qreal scaleFactorX READ scaleFactorX WRITE setScaleFactorX NOTIFY transformChanged)
+	Q_PROPERTY(qreal scaleFactorY READ scaleFactorY WRITE setScaleFactorY NOTIFY transformChanged)
+	Q_PROPERTY(QPointF pivot READ pivot WRITE setPivot NOTIFY transformChanged)
+
+	Q_PROPERTY(qreal startAngle READ startAngle WRITE setStartAngle NOTIFY arcChanged)
+	Q_PROPERTY(qreal endAngle READ endAngle WRITE setEndAngle NOTIFY arcChanged)
+
 	signals:
 		void penChanged();
 		void brushChanged();
 		void closeChanged();
 		void XRadiusChanged();
 		void YRadiusChanged();
-		
-		
+		void transformChanged();
+		void arcChanged();
+
 	public:
 		enum ShapeType {Line	  =1,
 						Rectangle =2,
 						Ellipse	  =4,
-						Polygon   =8 };
+						Polygon   =8,
+						Path      =16 };
 		Q_ENUM (ShapeType)
+
+		enum ArcClosure {NoClosure = 0, Chord = 1, Pie = 2};
+		Q_ENUM (ArcClosure)
+
+		// Point of a Path shape. Anchors are in the same local coordinate
+		// frame as an ordinary Polygon's points; handle offsets are stored
+		// *relative to the anchor*, so moving a node never has to rewrite
+		// its own handle coordinates.
+		enum class NodeKind {Corner, Smooth, Symmetric};
+		struct PathNode {
+			QPointF anchor;
+			NodeKind kind = NodeKind::Corner;
+			std::optional<QPointF> inHandle;
+			std::optional<QPointF> outHandle;
+		};
+
+		// Orthogonal to ShapeType: which handle set is currently shown.
+		// Cycled by clicking an already-selected shape without dragging --
+		// Size -> Corner -> RotateSkew -> Size for Rectangle (the only type
+		// with a Corner-radius concept), Size -> RotateSkew for everything
+		// else. Kept as separate, mutually exclusive states rather than
+		// overlaying Corner handles onto Size/RotateSkew, since showing all
+		// of them at once made the corner-radius handle indistinguishable
+		// from a resize handle in practice.
+		enum class HandleMode {Size, Corner, RotateSkew};
+
+		// index conventions, deliberately matched to what already exists
+		// rather than invented fresh:
+		//   Resize       0..7, same order as QetGraphicsHandlerUtility::pointsForRect
+		//                (this is exactly today's Rectangle/Ellipse handle set --
+		//                 only the Ctrl/Shift dispatch around it is new)
+		//   Rotate       0..3, corners: NW, NE, SE, SW
+		//   SkewEdge     0..3, edges:   N,  E,  S,  W
+		//   CornerRadius 0..1, same order as QetGraphicsHandlerUtility::pointForRadiusRect
+		//   ArcEndpoint  0 = start angle, 1 = end angle
+		enum class HandleRole {
+			Resize,                     // Size mode
+			Rotate, SkewEdge, Pivot,    // RotateSkew mode
+			CornerRadius,               // Rectangle, always shown alongside Size handles
+			ArcEndpoint,                // Ellipse, always shown
+			PathAnchor, PathControlIn, PathControlOut  // Polygon/Path, node-edit mode (see setPathNodes())
+		};
 
 		enum { Type = UserType + 1008 };
 
@@ -102,6 +164,40 @@ class QetShapeItem : public QetGraphicsItem
 		qreal YRadius() const {return m_yRadius;}
 		void setYRadius(qreal Y);
 
+			//Transform: one accessor pair per ShapeTransform scalar (see
+			//the Q_PROPERTY block above for why they are not grouped into
+			//a single property).
+		const ShapeTransform &shapeTransform() const {return m_transform;}
+		qreal rotation() const {return m_transform.rotation;}
+		void setRotation(qreal degrees);
+		qreal skewX() const {return m_transform.skewX;}
+		void setSkewX(qreal degrees);
+		qreal skewY() const {return m_transform.skewY;}
+		void setSkewY(qreal degrees);
+		qreal scaleFactorX() const {return m_transform.scaleX;}
+		void setScaleFactorX(qreal factor);
+		qreal scaleFactorY() const {return m_transform.scaleY;}
+		void setScaleFactorY(qreal factor);
+		QPointF pivot() const {return m_transform.pivot;}
+		void setPivot(const QPointF &pivot); // moves the pivot handle: compensates pos() so the shape does not jump
+		void resetPivotToBoundingRectCenter();
+
+			//Arc: only meaningful when shapeType() == Ellipse. A full
+			//ellipse is just an arc with span 360 -- there is no separate
+			//Arc shape type.
+		qreal startAngle() const {return m_startAngle;}
+		void setStartAngle(qreal degrees);
+		qreal endAngle() const {return m_endAngle;}
+		void setEndAngle(qreal degrees);
+		qreal spanAngle() const {return m_endAngle - m_startAngle;}
+		bool isFullEllipse() const {return qFuzzyCompare(qAbs(spanAngle()), qreal(360));}
+		ArcClosure arcClosure() const {return m_arcClosure;}
+		void setArcClosure(ArcClosure closure);
+
+			//Path (Bezier): only meaningful when shapeType() == Path.
+		const QVector<PathNode> &pathNodes() const {return m_nodes;}
+		void setPathNodes(const QVector<PathNode> &nodes);
+
 			//Methods available for polygon shape
 		int  pointsCount  () const;
 		void setNextPoint (QPointF P);
@@ -128,17 +224,45 @@ class QetShapeItem : public QetGraphicsItem
 				QGraphicsSceneContextMenuEvent *event) override;
 
 	private:
-		void switchResizeMode();
-		void addHandler();
-		void adjustHandlerPos();
+		void toggleHandleMode();
+		void rebuildHandles();       // (re)creates handler items -- only when the *set* of handles changes
+		void repositionHandles();    // moves existing handler items -- safe to call every frame of a live drag
 		void insertPoint();
 		void removePoint();
-		
-		void handlerMousePressEvent();
-		void handlerMouseMoveEvent(QGraphicsSceneMouseEvent *event);
-		void handlerMouseReleaseEvent();
+		void convertToPathExplicitly();   // context-menu action; see promoteRectangleOrEllipseToPolygon()
 
-		///ATTRIBUTES
+		void handlerMousePressEvent(int handlerIndex);
+		void handlerMouseMoveEvent(int handlerIndex, QGraphicsSceneMouseEvent *event);
+		void handlerMouseReleaseEvent(int handlerIndex);
+
+			// One dispatch function per handle role -- called from
+			// handlerMouseMoveEvent() with the mouse position already
+			// mapped to local coordinates and any grid snap applied.
+			// dragResize() covers both the plain and Ctrl/Shift/Alt-modified
+			// interpretations of the whole Size handle set.
+		void dragResize      (int index, const QPointF &localPos, Qt::KeyboardModifiers mods);
+		void dragRotateHandle(int cornerIndex, const QPointF &scenePos, Qt::KeyboardModifiers mods);
+		void dragSkewHandle  (int edgeIndex,   const QPointF &scenePos, Qt::KeyboardModifiers mods);
+		void dragPivotHandle (const QPointF &localPos);
+		void dragArcEndpoint (int which,       const QPointF &localPos, Qt::KeyboardModifiers mods);
+		void dragCornerRadius(int which,       const QPointF &localPos);
+		void dragPathAnchor  (int which,       const QPointF &localPos);
+
+		void promoteRectangleOrEllipseToPolygon(int detachedResizeIndex, const QPointF &newLocalPos);
+		QDomElement snapshotXml() const;   // helper for PromoteShapeCommand: toXml() into a throwaway document
+
+		QRectF localRect() const;
+		QPainterPath outline() const;   // raw, unstroked path for the current type; shared by shape() and paint()
+		QVector<QPointF> currentHandlePositions() const;   // in m_handleRoles/m_handleSlot order, local coordinates
+		QPointF handlePositionFor(HandleRole role, int slot) const;
+		QPointF scaleOnlyOffset(const QPointF &localPoint) const;        // (localPoint - pivot), scaled, in the pre-shear frame
+		QPointF scaleAndShearOffset(const QPointF &localPoint) const;    // same, with current shear also applied -- the pre-rotation frame
+		static QColor colorForHandleRole(HandleRole role);
+		static QRectF lockAspectRatio(const QRectF &oldRect, QRectF newRect, int resizeIndex, bool mirrored);
+		static QPointF cornerPoint(const QRectF &rect, int cornerIndex);   // 0=NW,1=NE,2=SE,3=SW
+		static QPointF edgeMidpoint(const QRectF &rect, int edgeIndex);    // 0=N, 1=E, 2=S, 3=W
+
+			///ATTRIBUTES
 	private:
 		ShapeType	 m_shapeType;
 		QPen		 m_pen;
@@ -153,7 +277,6 @@ class QetShapeItem : public QetGraphicsItem
 		int		 m_vector_index;
 		bool		 m_closed = false,
 				 m_modifie_radius_equaly = false;
-		int		 m_resize_mode = 1;
 		QVector<QetGraphicsHandlerItem *> m_handler_vector;
 		QAction		 *m_insert_point,
 				 *m_remove_point;
@@ -161,5 +284,20 @@ class QetShapeItem : public QetGraphicsItem
 				 m_yRadius = 0,
 				 m_old_xRadius,
 				 m_old_yRadius;
+
+		ShapeTransform   m_transform;
+		ShapeTransform   m_old_transform;
+		HandleMode       m_handleMode = HandleMode::Size;
+		QVector<HandleRole> m_handleRoles;   // parallel to m_handler_vector, one role per handle
+		QVector<int>        m_handleSlot;    // parallel to m_handler_vector, meaning depends on role (see HandleRole)
+		QPointF          m_old_pos;
+
+		qreal            m_startAngle = 0;
+		qreal            m_endAngle = 360;
+		ArcClosure       m_arcClosure = NoClosure;
+		bool             m_pivotIsCustom = false;   // false: pivot auto-follows the bounding-rect center on every geometry edit
+		bool             m_deferHandleReposition = false;   // true while setPivot() is applying its two related updates together
+
+		QVector<PathNode> m_nodes;
 };
 #endif // QETSHAPEITEM_H

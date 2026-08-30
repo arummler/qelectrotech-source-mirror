@@ -28,13 +28,17 @@
 #include "../qetxml.h"
 #include "../ui/shapegraphicsitempropertieswidget.h"
 #include "../utils/qetutils.h"
+#include "../undocommand/promoteshapecommand.h"
+
+#include <QMenu>
+#include <QtCore/qmath.h>
 
 /**
 	@brief QetShapeItem::QetShapeItem
 	Constructor of shape item. point 1 and 2 must be in scene coordinate
 	@param p1 first point
 	@param p2 second point
-	@param type type of item (line, rectangle, ellipse)
+	@param type type of item (line, rectangle, ellipse, polygon, path)
 	@param parent parent item
 */
 QetShapeItem::QetShapeItem(QPointF p1, QPointF p2, ShapeType type, QGraphicsItem *parent) :
@@ -48,6 +52,7 @@ QetShapeItem::QetShapeItem(QPointF p1, QPointF p2, ShapeType type, QGraphicsItem
 	setFlags(QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemSendsGeometryChanges);
 	setAcceptHoverEvents(true);
 	m_pen.setStyle(Qt::SolidLine);
+	m_transform.pivot = localRect().center();
 		//ensure handlers are always above this item
 	connect(this, &QetShapeItem::zChanged, [this]()
 	{
@@ -61,7 +66,6 @@ QetShapeItem::QetShapeItem(QPointF p1, QPointF p2, ShapeType type, QGraphicsItem
 	m_remove_point = new QAction(tr("Supprimer ce point"), this);
 	m_remove_point->setIcon(QET::Icons::Remove);
 	connect(m_remove_point, &QAction::triggered, this, &QetShapeItem::removePoint);
-
 }
 
 QetShapeItem::~QetShapeItem()
@@ -129,7 +133,9 @@ bool QetShapeItem::setLine(const QLineF &line)
 	prepareGeometryChange();
 	m_P1 = line.p1();
 	m_P2 = line.p2();
-	adjustHandlerPos();
+	if (!m_pivotIsCustom)
+		resetPivotToBoundingRectCenter();
+	repositionHandles();
 	return true;
 }
 
@@ -146,7 +152,9 @@ bool QetShapeItem::setRect(const QRectF &rect)
 		prepareGeometryChange();
 		m_P1 = rect.topLeft();
 		m_P2 = rect.bottomRight();
-		adjustHandlerPos();
+		if (!m_pivotIsCustom)
+			resetPivotToBoundingRectCenter();
+		repositionHandles();
 		return true;
 	}
 
@@ -166,7 +174,9 @@ bool QetShapeItem::setPolygon(const QPolygonF &polygon)
 	}
 	prepareGeometryChange();
 	m_polygon = polygon;
-	adjustHandlerPos();
+	if (!m_pivotIsCustom)
+		resetPivotToBoundingRectCenter();
+	repositionHandles();
 	return true;
 }
 
@@ -189,7 +199,7 @@ void QetShapeItem::setXRadius(qreal X)
 {
 	m_xRadius = X;
 	update();
-	adjustHandlerPos();
+	repositionHandles();
 	emit XRadiusChanged();
 }
 
@@ -197,8 +207,160 @@ void QetShapeItem::setYRadius(qreal Y)
 {
 	m_yRadius = Y;
 	update();
-	adjustHandlerPos();
+	repositionHandles();
 	emit YRadiusChanged();
+}
+
+/**
+	@brief QetShapeItem::setRotation
+	@param degrees
+	One property per ShapeTransform scalar: every handle (and the
+	properties panel) touches exactly one of these, never the matrix
+	directly. See shapetransform.h for why the matrix itself is only ever
+	built from these, never mutated by hand.
+*/
+void QetShapeItem::setRotation(qreal degrees)
+{
+	if (qFuzzyCompare(m_transform.rotation, degrees)) return;
+	prepareGeometryChange();
+	m_transform.rotation = degrees;
+	setTransform(m_transform.toMatrix());
+	emit transformChanged();
+}
+
+void QetShapeItem::setSkewX(qreal degrees)
+{
+	if (qFuzzyCompare(m_transform.skewX, degrees)) return;
+	prepareGeometryChange();
+	m_transform.skewX = degrees;
+	setTransform(m_transform.toMatrix());
+	emit transformChanged();
+}
+
+void QetShapeItem::setSkewY(qreal degrees)
+{
+	if (qFuzzyCompare(m_transform.skewY, degrees)) return;
+	prepareGeometryChange();
+	m_transform.skewY = degrees;
+	setTransform(m_transform.toMatrix());
+	emit transformChanged();
+}
+
+void QetShapeItem::setScaleFactorX(qreal factor)
+{
+	if (qFuzzyCompare(m_transform.scaleX, factor)) return;
+	prepareGeometryChange();
+	m_transform.scaleX = factor;
+	setTransform(m_transform.toMatrix());
+	emit transformChanged();
+}
+
+void QetShapeItem::setScaleFactorY(qreal factor)
+{
+	if (qFuzzyCompare(m_transform.scaleY, factor)) return;
+	prepareGeometryChange();
+	m_transform.scaleY = factor;
+	setTransform(m_transform.toMatrix());
+	emit transformChanged();
+}
+
+/**
+	@brief QetShapeItem::setPivot
+	Move the pivot point. pos() is adjusted at the same time so the shape
+	never visibly jumps -- see compensatedPositionForNewPivot() in
+	shapetransform.h for why that adjustment is needed at all.
+	@param newPivot in local coordinates
+*/
+void QetShapeItem::setPivot(const QPointF &newPivot)
+{
+	if (m_transform.pivot == newPivot) return;
+	const QPointF newPos = compensatedPositionForNewPivot(
+			pos(), m_transform.pivot, newPivot, m_transform.linearPart());
+	prepareGeometryChange();
+	m_transform.pivot = newPivot;
+	// Apply both related updates, then reposition handles exactly once
+	// using the fully-updated state. Without this guard, setTransform()
+	// alone would trigger a reposition using the new transform but the
+	// still-old pos() (or vice versa if the calls were swapped), which is
+	// a real, if usually imperceptible, inconsistent intermediate state --
+	// removing it outright is cheaper than reasoning about whether it's
+	// ever visible.
+	m_deferHandleReposition = true;
+	setTransform(m_transform.toMatrix());
+	// QetGraphicsItem::setPos() (our own base class) silently re-snaps its
+	// argument to the grid before applying it -- appropriate for an
+	// ordinary user drag of the whole shape, but wrong here: newPos is an
+	// exact compensation value derived from rotation trigonometry, so it's
+	// essentially never grid-aligned, and snapping it introduces real
+	// rounding error on every single frame of a pivot drag. Over a
+	// multi-frame drag that accumulates into a clearly visible drift of
+	// the whole rectangle -- confirmed by simulation: reproducing the
+	// grid-snap here produced tens of units of drift over a normal drag;
+	// calling Qt's own, non-snapping setPos() directly produced exactly
+	// zero. Grid-snapping the *pivot itself* (done earlier, in
+	// handlerMouseMoveEvent, on the mouse position) is still exactly
+	// right -- it's only this internal, precision-critical compensation
+	// step that must bypass it.
+	QGraphicsItem::setPos(newPos);
+	m_deferHandleReposition = false;
+	repositionHandles();
+	emit transformChanged();
+}
+
+void QetShapeItem::resetPivotToBoundingRectCenter()
+{
+	m_pivotIsCustom = false;
+	setPivot(localRect().center());
+}
+
+/**
+	@brief QetShapeItem::setStartAngle / setEndAngle
+	Only meaningful for Ellipse. Dragging one endpoint onto the other
+	(span within 5 degrees of a full turn) snaps back to a full ellipse --
+	this is the whole answer to "how do I turn an arc back into a closed
+	ellipse": there is no separate Arc type to convert out of.
+*/
+void QetShapeItem::setStartAngle(qreal degrees)
+{
+	if (qFuzzyCompare(m_startAngle, degrees)) return;
+	prepareGeometryChange();
+	m_startAngle = degrees;
+	if (qAbs(spanAngle()) >= 355.0) { m_startAngle = 0; m_endAngle = 360; }
+	emit arcChanged();
+}
+
+void QetShapeItem::setEndAngle(qreal degrees)
+{
+	if (qFuzzyCompare(m_endAngle, degrees)) return;
+	prepareGeometryChange();
+	m_endAngle = degrees;
+	if (qAbs(spanAngle()) >= 355.0) { m_startAngle = 0; m_endAngle = 360; }
+	emit arcChanged();
+}
+
+void QetShapeItem::setArcClosure(ArcClosure closure)
+{
+	if (m_arcClosure == closure) return;
+	prepareGeometryChange();
+	m_arcClosure = closure;
+	emit arcChanged();
+}
+
+/**
+	@brief QetShapeItem::setPathNodes
+	Replace the node list of a Path shape. Interactive dragging of
+	individual anchors is wired up below (dragPathAnchor(), same as
+	Polygon); dragging a node's Bezier control handles is the deliberately
+	deferred next slice of this feature -- the data model, XML and
+	rendering are all in place for it (see outline()), only its own
+	handle roles (PathControlIn/PathControlOut) are not yet built by
+	rebuildHandles().
+*/
+void QetShapeItem::setPathNodes(const QVector<PathNode> &nodes)
+{
+	prepareGeometryChange();
+	m_nodes = nodes;
+	repositionHandles();
 }
 
 /**
@@ -240,7 +402,6 @@ void QetShapeItem::removePoints(int number)
 		i++;
 		prepareGeometryChange();
 		m_polygon.pop_back();
-		setTransformOriginPoint(boundingRect().center());
 
 	} while (i < number);
 }
@@ -255,10 +416,32 @@ QRectF QetShapeItem::boundingRect() const
 }
 
 /**
-	@brief QetShapeItem::shape
-	@return the shape of this item
+	@brief QetShapeItem::localRect
+	The rect used for corner/edge handle placement and for arc/radius
+	math. For Polygon and Path this is the vertex bounding box; for
+	everything else it is simply the P1/P2 rect, as before.
 */
-QPainterPath QetShapeItem::shape() const
+QRectF QetShapeItem::localRect() const
+{
+	if (m_shapeType == Polygon)
+		return m_polygon.boundingRect();
+	if (m_shapeType == Path)
+	{
+		QPolygonF anchors;
+		for (const PathNode &n : m_nodes) anchors << n.anchor;
+		return anchors.boundingRect();
+	}
+	return QRectF(m_P1, m_P2).normalized();
+}
+
+/**
+	@brief QetShapeItem::outline
+	The raw, unstroked path for the current type, in local coordinates.
+	Shared by shape() (which strokes it for hit-testing/selection) and
+	paint() (which draws it directly) so the two can never disagree about
+	what the shape actually looks like.
+*/
+QPainterPath QetShapeItem::outline() const
 {
 	QPainterPath path;
 
@@ -268,29 +451,85 @@ QPainterPath QetShapeItem::shape() const
 			path.moveTo(m_P1);
 			path.lineTo(m_P2);
 			break;
+
 		case Rectangle:
-			path.addRoundedRect(
-						QRectF(m_P1, m_P2),
-						m_xRadius,
-						m_yRadius);
+			path.addRoundedRect(QRectF(m_P1, m_P2), m_xRadius, m_yRadius);
 			break;
+
 		case Ellipse:
-			path.addEllipse(QRectF(m_P1, m_P2));
+		{
+			const QRectF r(QRectF(m_P1, m_P2));
+			if (isFullEllipse())
+			{
+				path.addEllipse(r);
+			}
+			else if (m_arcClosure == Pie)
+			{
+				path.moveTo(r.center());
+				path.arcTo(r, m_startAngle, spanAngle());
+				path.closeSubpath();
+			}
+			else
+			{
+				path.arcMoveTo(r, m_startAngle);
+				path.arcTo(r, m_startAngle, spanAngle());
+				if (m_arcClosure == Chord)
+					path.closeSubpath();
+			}
 			break;
+		}
+
 		case Polygon:
 			path.addPolygon(m_polygon);
 			if (m_closed) {
 				path.closeSubpath();
 			}
 			break;
+
+		case Path:
+			if (!m_nodes.isEmpty())
+			{
+				path.moveTo(m_nodes.first().anchor);
+				for (int i = 1; i < m_nodes.size(); ++i)
+				{
+					const PathNode &prev = m_nodes.at(i - 1);
+					const PathNode &cur  = m_nodes.at(i);
+					if (prev.outHandle || cur.inHandle)
+						path.cubicTo(
+								prev.anchor + prev.outHandle.value_or(QPointF()),
+								cur.anchor  + cur.inHandle.value_or(QPointF()),
+								cur.anchor);
+					else
+						path.lineTo(cur.anchor);
+				}
+				if (m_closed && m_nodes.size() > 1)
+				{
+					const PathNode &last  = m_nodes.last();
+					const PathNode &first = m_nodes.first();
+					if (last.outHandle || first.inHandle)
+						path.cubicTo(
+								last.anchor + last.outHandle.value_or(QPointF()),
+								first.anchor + first.inHandle.value_or(QPointF()),
+								first.anchor);
+					path.closeSubpath();
+				}
+			}
+			break;
 	}
 
+	return path;
+}
+
+/**
+	@brief QetShapeItem::shape
+	@return the shape of this item
+*/
+QPainterPath QetShapeItem::shape() const
+{
 	QPainterPathStroker pps;
 	pps.setWidth(m_hovered? m_pen.widthF()+10 : m_pen.widthF());
 	pps.setJoinStyle(Qt::RoundJoin);
-	path = pps.createStroke(path);
-
-	return (path);
+	return pps.createStroke(outline());
 }
 
 /**
@@ -325,16 +564,7 @@ void QetShapeItem::paint(
 		painter -> restore  ();
 	}
 
-	switch (m_shapeType)
-	{
-	case Line:      painter->drawLine(QLineF(m_P1, m_P2)); break;
-	case Rectangle: painter->drawRoundedRect(QRectF(m_P1, m_P2),
-						 m_xRadius,
-						 m_yRadius); break;
-	case Ellipse:   painter->drawEllipse(QRectF(m_P1, m_P2)); break;
-	case Polygon:   m_closed ? painter->drawPolygon(m_polygon)
-				 : painter->drawPolyline(m_polygon); break;
-	}
+	painter->drawPath(outline());
 
 	painter->restore();
 }
@@ -361,13 +591,24 @@ void QetShapeItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *event)
 	QetGraphicsItem::hoverLeaveEvent(event);
 }
 
+/**
+	@brief QetShapeItem::mousePressEvent
+	A left click on an *already selected* shape (without having dragged)
+	toggles between the Size and RotateSkew handle sets -- the same
+	convention LibreOffice Draw and PowerPoint use. A click that performs
+	the selection itself does not toggle, so selecting a shape always
+	starts in Size mode.
+*/
 void QetShapeItem::mousePressEvent(QGraphicsSceneMouseEvent *event)
 {
+	const bool wasAlreadySelected = isSelected();
 	event->ignore();
 	QetGraphicsItem::mousePressEvent(event);
 
-	if (event->button() == Qt::LeftButton) {
-		switchResizeMode();
+	if (event->button() == Qt::LeftButton)
+	{
+		if (wasAlreadySelected && isSelected())
+			toggleHandleMode();
 		event->accept();
 	}
 }
@@ -384,8 +625,8 @@ QVariant QetShapeItem::itemChange(QGraphicsItem::GraphicsItemChange change,
 	if (change == ItemSelectedHasChanged)
 	{
 		if (value.toBool() == true) {
-			//If this is selected, wa add handlers.
-			addHandler();
+			//If this is selected, we add handlers.
+			rebuildHandles();
 		}
 		else //Else this is deselected, we remove handlers
 		{
@@ -393,12 +634,15 @@ QVariant QetShapeItem::itemChange(QGraphicsItem::GraphicsItemChange change,
 			{
 				qDeleteAll(m_handler_vector);
 				m_handler_vector.clear();
+				m_handleRoles.clear();
+				m_handleSlot.clear();
 			}
-			m_resize_mode = 1;
+			m_handleMode = HandleMode::Size;
 		}
 	}
-	else if (change == ItemPositionHasChanged) {
-		adjustHandlerPos();
+	else if (change == ItemPositionHasChanged || change == ItemTransformHasChanged) {
+		if (!m_deferHandleReposition)
+			repositionHandles();
 	}
 	else if (change == ItemSceneHasChanged)
 	{
@@ -431,17 +675,17 @@ bool QetShapeItem::sceneEventFilter(QGraphicsItem *watched, QEvent *event)
 			{
 				if(event->type() == QEvent::GraphicsSceneMousePress) //Click
 				{
-					handlerMousePressEvent();
+					handlerMousePressEvent(m_vector_index);
 					return true;
 				}
 				else if(event->type() == QEvent::GraphicsSceneMouseMove) //Move
 				{
-					handlerMouseMoveEvent(static_cast<QGraphicsSceneMouseEvent *>(event));
+					handlerMouseMoveEvent(m_vector_index, static_cast<QGraphicsSceneMouseEvent *>(event));
 					return true;
 				}
 				else if (event->type() == QEvent::GraphicsSceneMouseRelease) //Release
 				{
-					handlerMouseReleaseEvent();
+					handlerMouseReleaseEvent(m_vector_index);
 					return true;
 				}
 			}
@@ -459,7 +703,9 @@ void QetShapeItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event)
 {
 	m_context_menu_pos = event->pos();
 
-	if (m_shapeType == QetShapeItem::Polygon)
+	const bool canConvertToPath = (m_shapeType == Rectangle || m_shapeType == Ellipse);
+
+	if (m_shapeType == QetShapeItem::Polygon || canConvertToPath)
 	{
 		if (diagram()->selectedItems().isEmpty()) {
 			this->setSelected(true);
@@ -483,18 +729,28 @@ void QetShapeItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event)
 				if (d_view)
 				{
 					QScopedPointer<QMenu> menu(new QMenu());
-					menu.data()->addAction(m_insert_point);
 
-					if (m_handler_vector.count() > 2)
+					if (m_shapeType == QetShapeItem::Polygon)
 					{
-						for (QetGraphicsHandlerItem *qghi : m_handler_vector)
+						menu.data()->addAction(m_insert_point);
+
+						if (m_handler_vector.count() > 2)
 						{
-							if (qghi->contains(qghi->mapFromScene(event->scenePos())))
+							for (QetGraphicsHandlerItem *qghi : m_handler_vector)
 							{
-								menu.data()->addAction(m_remove_point);
-								break;
+								if (qghi->contains(qghi->mapFromScene(event->scenePos())))
+								{
+									menu.data()->addAction(m_remove_point);
+									break;
+								}
 							}
 						}
+					}
+
+					if (canConvertToPath)
+					{
+						QAction *convert = menu.data()->addAction(tr("Convertir en polyligne"));
+						connect(convert, &QAction::triggered, this, &QetShapeItem::convertToPathExplicitly);
 					}
 
 					menu.data()->addSeparator();
@@ -511,148 +767,266 @@ void QetShapeItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event)
 }
 
 /**
-	@brief QetShapeItem::switchResizeMode
+	@brief QetShapeItem::toggleHandleMode
+	Cycled by clicking an already-selected shape: Size -> Corner ->
+	RotateSkew -> Size for Rectangle (the only type with a corner-radius
+	concept); Size -> RotateSkew -> Size for everything else, skipping the
+	Corner state entirely rather than showing an empty/meaningless one.
 */
-void QetShapeItem::switchResizeMode()
+void QetShapeItem::toggleHandleMode()
 {
-	if (m_shapeType == Ellipse)
-	{
-		if (m_resize_mode == 1)
-		{
-			m_resize_mode = 2;
-			for (QetGraphicsHandlerItem *qghi : m_handler_vector) {
-				qghi->setColor(Qt::darkGreen);
-			}
-		}
-		else
-		{
-			m_resize_mode = 1;
-			for (QetGraphicsHandlerItem *qghi : m_handler_vector) {
-				qghi->setColor(Qt::blue);
-			}
-		}
-	}
-	else if (m_shapeType == Rectangle)
-	{
-		if (m_resize_mode == 1)
-		{
-			m_resize_mode = 2;
-			for (QetGraphicsHandlerItem *qghi : m_handler_vector)
-				qghi->setColor(Qt::darkGreen);
-		}
-		else if (m_resize_mode == 2)
-		{
-			m_resize_mode = 3;
-			qDeleteAll(m_handler_vector);
-			m_handler_vector.clear();
-			addHandler();
-			for (QetGraphicsHandlerItem *qghi : m_handler_vector) {
-				qghi->setColor(Qt::magenta);
-			}
-		}
-		else if (m_resize_mode == 3)
-		{
-			m_resize_mode = 1;
-			qDeleteAll(m_handler_vector);
-			m_handler_vector.clear();
-			addHandler();
-			for (QetGraphicsHandlerItem *qghi : m_handler_vector) {
-				qghi->setColor(Qt::blue);
-			}
+	const bool hasCornerState = (m_shapeType == Rectangle);
 
-		}
+	if (m_handleMode == HandleMode::Size)
+		m_handleMode = hasCornerState ? HandleMode::Corner : HandleMode::RotateSkew;
+	else if (m_handleMode == HandleMode::Corner)
+		m_handleMode = HandleMode::RotateSkew;
+	else
+		m_handleMode = HandleMode::Size;
+
+	rebuildHandles();
+}
+
+/**
+	@brief QetShapeItem::colorForHandleRole
+	Purely cosmetic, but consistent with the existing convention of
+	color-coding what a handle currently does. Mirror-resize used to be
+	its own colored click-cycled mode (green); it is now a Ctrl modifier
+	available on every Resize handle, so only genuinely distinct
+	behaviours get their own color here.
+*/
+QColor QetShapeItem::colorForHandleRole(HandleRole role)
+{
+	switch (role)
+	{
+		case HandleRole::Resize:        return Qt::blue;
+		case HandleRole::Rotate:        return Qt::darkGreen;
+		case HandleRole::SkewEdge:      return Qt::darkYellow;
+		case HandleRole::Pivot:         return Qt::red;
+		case HandleRole::CornerRadius:  return Qt::magenta;
+		case HandleRole::ArcEndpoint:   return Qt::darkCyan;
+		case HandleRole::PathAnchor:    return Qt::blue;
+		case HandleRole::PathControlIn:
+		case HandleRole::PathControlOut:return Qt::gray;
+	}
+	return Qt::blue;
+}
+
+QPointF QetShapeItem::cornerPoint(const QRectF &rect, int cornerIndex)
+{
+	switch (cornerIndex & 3)
+	{
+		case 0: return rect.topLeft();
+		case 1: return rect.topRight();
+		case 2: return rect.bottomRight();
+		default: return rect.bottomLeft();
 	}
 }
 
-void QetShapeItem::addHandler()
+QPointF QetShapeItem::edgeMidpoint(const QRectF &rect, int edgeIndex)
 {
-	if (m_handler_vector.isEmpty())
+	switch (edgeIndex & 3)
 	{
-		QVector <QPointF> points_vector;
-		switch (m_shapeType)
-		{
-			case Line:
-				points_vector << m_P1 << m_P2;
-				break;
-			case Rectangle:
-				if (m_resize_mode == 3) {
-					points_vector = QetGraphicsHandlerUtility::pointForRadiusRect(QRectF(m_P1, m_P2), m_xRadius, m_yRadius);
-				}
-				else {
-					points_vector = QetGraphicsHandlerUtility::pointsForRect(QRectF(m_P1, m_P2));
-				}
-				break;
-			case Ellipse:
-				points_vector = QetGraphicsHandlerUtility::pointsForRect(QRectF(m_P1, m_P2));
-				break;
-			case Polygon:
-				points_vector = m_polygon;
-				break;
-		}
-
-		if(!points_vector.isEmpty() && scene())
-		{
-			m_handler_vector = QetGraphicsHandlerItem::handlerForPoint(mapToScene(points_vector), QETUtils::graphicsHandlerSize(this));
-
-			for(const auto handler : std::as_const(m_handler_vector))
-			{
-				handler->setZValue(this->zValue()+1);
-				handler->setColor(Qt::blue);
-				scene()->addItem(handler);
-				handler->installSceneEventFilter(this);
-			}
-		}
+		case 0: return QPointF(rect.center().x(), rect.top());
+		case 1: return QPointF(rect.right(), rect.center().y());
+		case 2: return QPointF(rect.center().x(), rect.bottom());
+		default: return QPointF(rect.left(), rect.center().y());
 	}
 }
 
 /**
-	@brief QetShapeItem::adjustHandlerPos
-	Adjust the position of the handler item
+	@brief QetShapeItem::handlePositionFor
+	Local-coordinate position for one (role, slot) pair, given the
+	shape's *current* geometry. This is the single source of truth used
+	both to build handles from scratch (rebuildHandles()) and to move
+	existing ones during a live drag (repositionHandles()) -- the two
+	can never disagree about where a handle belongs.
 */
-void QetShapeItem::adjustHandlerPos()
+QPointF QetShapeItem::handlePositionFor(HandleRole role, int slot) const
 {
-	if (m_handler_vector.isEmpty()) {
-		return;
-	}
+	const QRectF r = localRect();
 
-	QVector <QPointF> points_vector;
-	switch (m_shapeType)
+	switch (role)
 	{
-		case Line: {
-			points_vector << m_P1 << m_P2;
-			break;
-		}
-		case Rectangle: {
-			if (m_resize_mode != 3) {
-				points_vector = QetGraphicsHandlerUtility::pointsForRect(QRectF(m_P1, m_P2));
-			}
-			else {
-				points_vector = QetGraphicsHandlerUtility::pointForRadiusRect(QRectF(m_P1, m_P2), m_xRadius, m_yRadius);
-			}
-			break;
-		}
-		case Ellipse: {
-			points_vector = QetGraphicsHandlerUtility::pointsForRect(QRectF(m_P1, m_P2));
-			break;
-		}
-		case Polygon: {
-			points_vector = m_polygon;
-			break;
-		}
-	}
+		case HandleRole::Resize:
+			if (m_shapeType == Line)
+				return (slot == 0) ? m_P1 : m_P2;
+			return QetGraphicsHandlerUtility::pointsForRect(r).value(slot);
 
-	if (m_handler_vector.size() == points_vector.size())
-	{
-		points_vector = mapToScene(points_vector);
-		for (int i = 0 ; i < points_vector.size() ; ++i)
-			m_handler_vector.at(i)->setPos(points_vector.at(i));
+		case HandleRole::Rotate:
+			return cornerPoint(r, slot);
+
+		case HandleRole::SkewEdge:
+			return edgeMidpoint(r, slot);
+
+		case HandleRole::Pivot:
+			return m_transform.pivot;
+
+		case HandleRole::CornerRadius:
+			return QetGraphicsHandlerUtility::pointForRadiusRect(r, m_xRadius, m_yRadius).value(slot);
+
+		case HandleRole::ArcEndpoint:
+			return QetGraphicsHandlerUtility::pointsForArc(r, m_startAngle, spanAngle()).value(slot);
+
+		case HandleRole::PathAnchor:
+			if (m_shapeType == Polygon)
+				return m_polygon.value(slot);
+			return (slot < m_nodes.size()) ? m_nodes.at(slot).anchor : QPointF();
+
+		case HandleRole::PathControlIn:
+		case HandleRole::PathControlOut:
+			// Deferred: no handles of this role are created by
+			// rebuildHandles() yet (see setPathNodes()).
+			return QPointF();
 	}
-	else
+	return QPointF();
+}
+
+QVector<QPointF> QetShapeItem::currentHandlePositions() const
+{
+	QVector<QPointF> positions;
+	positions.reserve(m_handleRoles.size());
+	for (int i = 0; i < m_handleRoles.size(); ++i)
+		positions << handlePositionFor(m_handleRoles.at(i), m_handleSlot.at(i));
+	return positions;
+}
+
+/**
+	@brief QetShapeItem::scaleOnlyOffset / scaleAndShearOffset
+	A local point's offset from the pivot, run through *only* the parts of
+	the linear transform that are not currently being edited by a drag --
+	i.e. the parts that stay fixed while the user is dragging one specific
+	handle. These are the fixed reference values dragRotateHandle() and
+	dragSkewHandle() solve against, instead of round-tripping through
+	mapFromScene() (which would divide out the very parameter being
+	solved for and turn the drag into a feedback loop -- see
+	dragRotateHandle()'s comment for the concrete failure mode this
+	replaces).
+*/
+QPointF QetShapeItem::scaleOnlyOffset(const QPointF &localPoint) const
+{
+	const QPointF offset = localPoint - m_transform.pivot;
+	return QPointF(offset.x() * m_transform.scaleX, offset.y() * m_transform.scaleY);
+}
+
+QPointF QetShapeItem::scaleAndShearOffset(const QPointF &localPoint) const
+{
+	const QPointF scaled = scaleOnlyOffset(localPoint);
+	const qreal kx = qTan(qDegreesToRadians(m_transform.skewX));
+	const qreal ky = qTan(qDegreesToRadians(m_transform.skewY));
+	return QPointF(scaled.x() + kx * scaled.y(), scaled.y() + ky * scaled.x());
+}
+
+/**
+	@brief QetShapeItem::rebuildHandles
+	(Re)creates the handler items from scratch, for the current
+	shapeType()/handleMode(). Only called when the *set* of handles
+	changes -- selection, mode toggle, node count change -- never during
+	a live drag, since that would delete the very QetGraphicsHandlerItem
+	currently receiving the mouse-move events. See repositionHandles()
+	for the drag-safe alternative.
+*/
+void QetShapeItem::rebuildHandles()
+{
+	if (!m_handler_vector.isEmpty())
 	{
 		qDeleteAll(m_handler_vector);
 		m_handler_vector.clear();
-		addHandler();
 	}
+	m_handleRoles.clear();
+	m_handleSlot.clear();
+
+	auto addRole = [this](HandleRole role, int slot) {
+		m_handleRoles << role;
+		m_handleSlot << slot;
+	};
+
+	switch (m_shapeType)
+	{
+		case Line:
+			addRole(HandleRole::Resize, 0);
+			addRole(HandleRole::Resize, 1);
+			if (m_handleMode == HandleMode::RotateSkew)
+				addRole(HandleRole::Pivot, 0);
+			break;
+
+		case Rectangle:
+		case Ellipse:
+			if (m_handleMode == HandleMode::Size)
+			{
+				for (int i = 0; i < 8; ++i) addRole(HandleRole::Resize, i);
+			}
+			else if (m_handleMode == HandleMode::Corner)
+			{
+				// Rectangle only -- toggleHandleMode() never selects this
+				// state for Ellipse, so this branch is a no-op for it.
+				for (int i = 0; i < 2; ++i) addRole(HandleRole::CornerRadius, i);
+			}
+			else // RotateSkew
+			{
+				for (int i = 0; i < 4; ++i) addRole(HandleRole::Rotate, i);
+				for (int i = 0; i < 4; ++i) addRole(HandleRole::SkewEdge, i);
+				addRole(HandleRole::Pivot, 0);
+			}
+			if (m_shapeType == Ellipse)
+				for (int i = 0; i < 2; ++i) addRole(HandleRole::ArcEndpoint, i);
+			break;
+
+		case Polygon:
+			for (int i = 0; i < m_polygon.size(); ++i)
+				addRole(HandleRole::PathAnchor, i);
+			if (m_handleMode == HandleMode::RotateSkew)
+				addRole(HandleRole::Pivot, 0);
+			break;
+
+		case Path:
+			for (int i = 0; i < m_nodes.size(); ++i)
+				addRole(HandleRole::PathAnchor, i);
+			if (m_handleMode == HandleMode::RotateSkew)
+				addRole(HandleRole::Pivot, 0);
+			break;
+	}
+
+	if (m_handleRoles.isEmpty() || !scene())
+		return;
+
+	const QVector<QPointF> positions = currentHandlePositions();
+	m_handler_vector = QetGraphicsHandlerItem::handlerForPoint(mapToScene(positions), QETUtils::graphicsHandlerSize(this));
+
+	for (int i = 0; i < m_handler_vector.size(); ++i)
+	{
+		QetGraphicsHandlerItem *h = m_handler_vector.at(i);
+		h->setZValue(zValue() + 1);
+		h->setColor(colorForHandleRole(m_handleRoles.at(i)));
+		scene()->addItem(h);
+		h->installSceneEventFilter(this);
+	}
+}
+
+/**
+	@brief QetShapeItem::repositionHandles
+	Moves the *existing* handler items to match current geometry, without
+	touching their identity or which one is mid-drag. Safe (and expected)
+	to be called on every frame of a live drag. Falls back to a full
+	rebuild only if the handle count has somehow drifted out of sync --
+	this should not normally happen, since only rebuildHandles() ever
+	changes m_handleRoles/m_handleSlot.
+*/
+void QetShapeItem::repositionHandles()
+{
+	if (m_handler_vector.isEmpty())
+		return;
+
+	const QVector<QPointF> positions = currentHandlePositions();
+	if (positions.size() != m_handler_vector.size())
+	{
+		rebuildHandles();
+		return;
+	}
+
+	const QVector<QPointF> scenePositions = mapToScene(positions);
+	for (int i = 0; i < scenePositions.size(); ++i)
+		m_handler_vector.at(i)->setPos(scenePositions.at(i));
 }
 
 void QetShapeItem::insertPoint()
@@ -705,17 +1079,268 @@ void QetShapeItem::removePoint()
 }
 
 /**
-	@brief QetShapeItem::handlerMousePressEvent
-	@param qghi
-	@param event
+	@brief QetShapeItem::snapshotXml
+	toXml() into a private, throwaway document -- used only to hand a
+	self-contained QDomElement to PromoteShapeCommand, which deep-clones
+	it again into its own document anyway (see promoteshapecommand.cpp).
 */
-void QetShapeItem::handlerMousePressEvent()
+QDomElement QetShapeItem::snapshotXml() const
 {
+	QDomDocument doc;
+	QDomElement e = toXml(doc);
+	doc.appendChild(e);
+	return e;
+}
+
+/**
+	@brief QetShapeItem::promoteRectangleOrEllipseToPolygon
+	Alt+drag on a Resize corner detaches that one vertex, at the moment
+	the shape stops being a Rectangle/Ellipse and becomes a Polygon. The
+	prior state (type, geometry, transform, style) is captured by
+	PromoteShapeCommand so a single Undo restores it exactly -- this fact
+	never touches the saved .qet file, only the session's undo stack.
+	@param detachedResizeIndex the Resize-role slot (0,2,5,7 = corners in
+	       QetGraphicsHandlerUtility::pointsForRect's own ordering) being dragged
+	@param newLocalPos where that corner is being dragged to
+*/
+void QetShapeItem::promoteRectangleOrEllipseToPolygon(int detachedResizeIndex, const QPointF &newLocalPos)
+{
+	const QDomElement before = snapshotXml();
+
+	QPolygonF corners;
+	const QRectF r = localRect();
+	corners << r.topLeft() << r.topRight() << r.bottomRight() << r.bottomLeft();
+
+	// pointsForRect corner slots (0,2,5,7) map onto our 0..3 corner order.
+	static const QHash<int,int> resizeSlotToCorner = {{0,0}, {2,1}, {5,3}, {7,2}};
+	const int cornerIndex = resizeSlotToCorner.value(detachedResizeIndex, 0);
+	corners[cornerIndex] = newLocalPos;
+
+	prepareGeometryChange();
+	m_shapeType = Polygon;
+	m_polygon = corners;
+	m_closed = true;
+
+	const QDomElement after = snapshotXml();
+
+	if (diagram())
+	{
+		auto *undo = new PromoteShapeCommand(this, before, after);
+		diagram()->undoStack().push(undo);
+	}
+
+	rebuildHandles();
+}
+
+void QetShapeItem::convertToPathExplicitly()
+{
+	if (m_shapeType != Rectangle && m_shapeType != Ellipse)
+		return;
+
+	const QDomElement before = snapshotXml();
+
+	QPolygonF corners;
+	const QRectF r = localRect();
+	corners << r.topLeft() << r.topRight() << r.bottomRight() << r.bottomLeft();
+
+	prepareGeometryChange();
+	m_shapeType = Polygon;
+	m_polygon = corners;
+	m_closed = true;
+
+	const QDomElement after = snapshotXml();
+
+	if (diagram())
+	{
+		auto *undo = new PromoteShapeCommand(this, before, after);
+		undo->setText(tr("Convertir %1 en polyligne").arg(name()));
+		diagram()->undoStack().push(undo);
+	}
+
+	rebuildHandles();
+}
+
+/**
+	@brief QetShapeItem::lockAspectRatio
+	Shift-constrained resize: keep the pre-drag width:height ratio,
+	driven by whichever dimension moved proportionally more, re-anchored
+	the same way the unconstrained result already was.
+*/
+QRectF QetShapeItem::lockAspectRatio(const QRectF &oldRect, QRectF newRect, int resizeIndex, bool mirrored)
+{
+	Q_UNUSED(resizeIndex)
+	if (qFuzzyIsNull(oldRect.width()) || qFuzzyIsNull(oldRect.height()))
+		return newRect;
+
+	const qreal ratio = oldRect.width() / oldRect.height();
+	qreal w = newRect.width(), h = newRect.height();
+	const qreal wChange = qAbs(w / oldRect.width() - 1.0);
+	const qreal hChange = qAbs(h / oldRect.height() - 1.0);
+	if (wChange > hChange) h = w / ratio; else w = h * ratio;
+
+	const QPointF anchor = mirrored ? oldRect.center() : newRect.topLeft();
+	if (mirrored)
+		return QRectF(anchor.x() - w / 2.0, anchor.y() - h / 2.0, w, h);
+
+	// Re-anchor on whichever corner of newRect did not move -- simplest
+	// robust way to express "keep the fixed corner fixed" without having
+	// to re-derive which corner that is from resizeIndex.
+	const bool keepLeft = qFuzzyCompare(newRect.left(), oldRect.left()) || newRect.left() >= oldRect.right();
+	const bool keepTop  = qFuzzyCompare(newRect.top(),  oldRect.top())  || newRect.top()  >= oldRect.bottom();
+	const qreal x = keepLeft ? newRect.left() : newRect.right() - w;
+	const qreal y = keepTop  ? newRect.top()  : newRect.bottom() - h;
+	return QRectF(x, y, w, h);
+}
+
+void QetShapeItem::dragResize(int index, const QPointF &localPos, Qt::KeyboardModifiers mods)
+{
+	if (m_shapeType == Line)
+	{
+		prepareGeometryChange();
+		(index == 0 ? m_P1 : m_P2) = localPos;
+		repositionHandles();
+		return;
+	}
+
+	// Alt on a corner detaches that single vertex instead of resizing --
+	// only corners (0,2,5,7 in pointsForRect's own ordering) carry that
+	// meaning; dragging an edge midpoint with Alt has no special effect.
+	static const QVector<int> cornerSlots = {0, 2, 5, 7};
+	if ((mods & Qt::AltModifier) && cornerSlots.contains(index))
+	{
+		promoteRectangleOrEllipseToPolygon(index, localPos);
+		return;
+	}
+
+	const bool mirrored = mods & Qt::ControlModifier;
+	QRectF newRect = mirrored
+			? QetGraphicsHandlerUtility::mirrorRectForPosAtIndex(localRect(), localPos, index)
+			: QetGraphicsHandlerUtility::rectForPosAtIndex(localRect(), localPos, index);
+
+	if (mods & Qt::ShiftModifier)
+		newRect = lockAspectRatio(localRect(), newRect, index, mirrored);
+
+	setRect(newRect.normalized());
+}
+
+void QetShapeItem::dragRotateHandle(int cornerIndex, const QPointF &scenePos, Qt::KeyboardModifiers mods)
+{
+	// Both angles below are computed *without* ever un-rotating by the
+	// shape's current rotation: scenePivot is exactly pos()+pivot
+	// regardless of rotation/skew/scale (a linear map always fixes its
+	// own origin -- see shapetransform.h), and scaleAndShearOffset() is
+	// the corner's position with everything *except* rotation already
+	// applied. Solving "angleMouse == angleReference + rotation" this way
+	// is a plain assignment, not a recurrence -- unlike computing the
+	// angle via mapFromScene(), which divides out the *current* rotation
+	// and makes each frame's result depend on the previous frame's
+	// result: with the mouse held perfectly still that recurrence
+	// alternates between two values forever instead of settling, which is
+	// exactly the "jumps back and forth, lags behind" symptom.
+	const QPointF scenePivot = pos() + m_transform.pivot;
+	const qreal angleMouse = qRadiansToDegrees(qAtan2(scenePos.y() - scenePivot.y(), scenePos.x() - scenePivot.x()));
+
+	const QPointF reference = scaleAndShearOffset(cornerPoint(localRect(), cornerIndex));
+	const qreal angleReference = qRadiansToDegrees(qAtan2(reference.y(), reference.x()));
+
+	qreal angle = angleMouse - angleReference;
+	if (mods & Qt::ShiftModifier)
+		angle = qRound(angle / 15.0) * 15.0;
+	setRotation(angle);
+}
+
+void QetShapeItem::dragSkewHandle(int edgeIndex, const QPointF &scenePos, Qt::KeyboardModifiers mods)
+{
+	// Solved in closed form for the one skew component being dragged,
+	// holding rotation, scale and the *other* skew axis at their current
+	// values -- the same reasoning as dragRotateHandle() above applies
+	// here: computing this via mapFromScene() would divide out the skew
+	// value this very function is trying to determine.
+	//
+	// Q  = the edge midpoint's offset from pivot, after scale only (fixed
+	//      during this drag).
+	// M  = the target offset (mouse position, relative to pos()+pivot),
+	//      with rotation undone (fixed rotation during this drag).
+	// Shear(kx,ky) maps Q to (Qx + kx*Qy, Qy + ky*Qx) -- see
+	// shapetransform.cpp's decomposeLinear() derivation for this same
+	// convention -- so each unknown drops out with a single division.
+	const QPointF pivot = m_transform.pivot;
+	const QPointF Q = scaleOnlyOffset(edgeMidpoint(localRect(), edgeIndex));
+
+	const qreal rad = qDegreesToRadians(m_transform.rotation);
+	const qreal c = qCos(rad), s = qSin(rad);
+	const QPointF targetRel = scenePos - pos() - pivot;
+	const QPointF M(targetRel.x() * c + targetRel.y() * s,
+	               -targetRel.x() * s + targetRel.y() * c);
+
+	qreal degrees;
+	if (edgeIndex == 0 || edgeIndex == 2)   // N/S edge -> skewX ("sh"): M.x = Q.x + kx*Q.y
+	{
+		if (qFuzzyIsNull(Q.y())) return;
+		degrees = qRadiansToDegrees(qAtan((M.x() - Q.x()) / Q.y()));
+		if (mods & Qt::ShiftModifier) degrees = qRound(degrees / 15.0) * 15.0;
+		setSkewX(degrees);
+	}
+	else                                     // E/W edge -> skewY ("sv"): M.y = Q.y + ky*Q.x
+	{
+		if (qFuzzyIsNull(Q.x())) return;
+		degrees = qRadiansToDegrees(qAtan((M.y() - Q.y()) / Q.x()));
+		if (mods & Qt::ShiftModifier) degrees = qRound(degrees / 15.0) * 15.0;
+		setSkewY(degrees);
+	}
+}
+
+void QetShapeItem::dragPivotHandle(const QPointF &localPos)
+{
+	// Snapping the pivot to the shape's own corners/center/edge-midpoints
+	// (Shift) is a straightforward nearest-of-9-candidates check; left as
+	// plain movement for now so the handle math above stays the focus.
+	m_pivotIsCustom = true;
+	setPivot(localPos);
+}
+
+void QetShapeItem::dragArcEndpoint(int which, const QPointF &localPos, Qt::KeyboardModifiers mods)
+{
+	const QRectF r = localRect();
+	const QPointF center = r.center();
+	qreal angle = -qRadiansToDegrees(qAtan2(localPos.y() - center.y(), localPos.x() - center.x()));
+	if (mods & Qt::ShiftModifier)
+		angle = qRound(angle / 15.0) * 15.0;
+	which == 0 ? setStartAngle(angle) : setEndAngle(angle);
+}
+
+void QetShapeItem::dragCornerRadius(int which, const QPointF &localPos)
+{
+	const qreal radius = QetGraphicsHandlerUtility::radiusForPosAtIndex(localRect(), localPos, which);
+	if (m_modifie_radius_equaly) { setXRadius(radius); setYRadius(radius); }
+	else if (which == 0) setXRadius(radius);
+	else setYRadius(radius);
+}
+
+void QetShapeItem::dragPathAnchor(int which, const QPointF &localPos)
+{
+	prepareGeometryChange();
+	if (m_shapeType == Polygon)
+		m_polygon.replace(which, localPos);
+	else if (which < m_nodes.size())
+		m_nodes[which].anchor = localPos;   // in/out handles are relative offsets: they follow for free
+	repositionHandles();
+}
+
+/**
+	@brief QetShapeItem::handlerMousePressEvent
+	@param handlerIndex
+*/
+void QetShapeItem::handlerMousePressEvent(int handlerIndex)
+{
+	Q_UNUSED(handlerIndex)
 	m_old_P1 = m_P1;
 	m_old_P2 = m_P2;
 	m_old_polygon = m_polygon;
 	m_old_xRadius = m_xRadius;
 	m_old_yRadius = m_yRadius;
+	m_old_transform = m_transform;
+	m_old_pos = pos();
 	if(m_xRadius == 0 && m_yRadius == 0) {
 		m_modifie_radius_equaly = true;
 	}
@@ -723,117 +1348,122 @@ void QetShapeItem::handlerMousePressEvent()
 
 /**
 	@brief QetShapeItem::handlerMouseMoveEvent
+	@param handlerIndex
 	@param event
 */
-void QetShapeItem::handlerMouseMoveEvent(QGraphicsSceneMouseEvent *event)
+void QetShapeItem::handlerMouseMoveEvent(int handlerIndex, QGraphicsSceneMouseEvent *event)
 {
-	QPointF new_pos = event->scenePos();
+	QPointF scenePos = event->scenePos();
 	if (event->modifiers() != Qt::ControlModifier)
-		new_pos = Diagram::snapToGrid(event->scenePos());
-	new_pos = mapFromScene(new_pos);
+		scenePos = Diagram::snapToGrid(scenePos);
 
-	switch (m_shapeType)
+	const HandleRole role = m_handleRoles.value(handlerIndex, HandleRole::Resize);
+	const int slot = m_handleSlot.value(handlerIndex, 0);
+	const Qt::KeyboardModifiers mods = event->modifiers();
+
+	// Rotate and SkewEdge are deliberately handled in scene space -- see
+	// their comments for why mapFromScene() (used for every other role
+	// below) is exactly the wrong tool for them.
+	if (role == HandleRole::Rotate) { dragRotateHandle(slot, scenePos, mods); return; }
+	if (role == HandleRole::SkewEdge) { dragSkewHandle(slot, scenePos, mods); return; }
+
+	const QPointF new_pos = mapFromScene(scenePos);
+
+	switch (role)
 	{
-		case Line:
-			prepareGeometryChange();
-			m_vector_index == 0 ? m_P1 = new_pos : m_P2 = new_pos;
-			adjustHandlerPos();
-			break;
-
-		case Rectangle:
-			if (m_resize_mode == 1) {
-				setRect(QetGraphicsHandlerUtility::rectForPosAtIndex(QRectF(m_P1, m_P2), new_pos, m_vector_index));
-				break;
-			}
-			else if (m_resize_mode == 2) {
-				setRect(QetGraphicsHandlerUtility::mirrorRectForPosAtIndex(QRectF(m_P1, m_P2), new_pos, m_vector_index));
-				break;
-			}
-			else {
-				qreal radius = QetGraphicsHandlerUtility::radiusForPosAtIndex(QRectF(m_P1, m_P2), new_pos, m_vector_index);
-				if(m_modifie_radius_equaly) {
-					setXRadius(radius);
-					setYRadius(radius);
-				}
-				else if(m_vector_index == 0) {
-					setXRadius(radius);
-				}
-				else {
-					setYRadius(radius);
-				}
-				adjustHandlerPos();
-				break;
-			}
-		case Ellipse:
-			if (m_resize_mode == 1) {
-				setRect(QetGraphicsHandlerUtility::rectForPosAtIndex(QRectF(m_P1, m_P2), new_pos, m_vector_index));
-				break;
-			}
-			else {
-				setRect(QetGraphicsHandlerUtility::mirrorRectForPosAtIndex(QRectF(m_P1, m_P2), new_pos, m_vector_index));
-				break;
-			}
-
-		case Polygon:
-			prepareGeometryChange();
-			m_polygon.replace(m_vector_index, new_pos);
-			adjustHandlerPos();
-			break;
-	}	//End switch
+		case HandleRole::Resize:        dragResize(slot, new_pos, mods); break;
+		case HandleRole::Pivot:         dragPivotHandle(new_pos); break;
+		case HandleRole::CornerRadius:  dragCornerRadius(slot, new_pos); break;
+		case HandleRole::ArcEndpoint:   dragArcEndpoint(slot, new_pos, mods); break;
+		case HandleRole::PathAnchor:    dragPathAnchor(slot, new_pos); break;
+		case HandleRole::Rotate:
+		case HandleRole::SkewEdge:
+			break; // handled above
+		case HandleRole::PathControlIn:
+		case HandleRole::PathControlOut:
+			break; // deferred, see class comment
+	}
 }
 
 /**
 	@brief QetShapeItem::handlerMouseReleaseEvent
-	@param qghi
-	@param event
+	@param handlerIndex
 */
-void QetShapeItem::handlerMouseReleaseEvent()
+void QetShapeItem::handlerMouseReleaseEvent(int handlerIndex)
 {
 	m_modifie_radius_equaly = false;
+	const HandleRole role = m_handleRoles.value(handlerIndex, HandleRole::Resize);
 
-	if (diagram())
+	if (!diagram())
+		return;
+
+	QUndoCommand *undo = nullptr;
+
+	switch (role)
 	{
-		QPropertyUndoCommand *undo = nullptr;
-		if ((m_shapeType & (Line | Rectangle | Ellipse)) && ((m_P1 != m_old_P1 || m_P2 != m_old_P2) ||
-															 (m_old_xRadius != XRadius() || m_old_yRadius != m_yRadius))
-			)
-		{
-			switch(m_shapeType)
+		case HandleRole::Resize:
+			if (m_shapeType == Line)
 			{
-				case Line: {
-					undo = new QPropertyUndoCommand(this, "line",QLineF(m_old_P1, m_old_P2), QLineF(m_P1, m_P2));
-					break;
-				}
-				case Rectangle: {
-					if (m_resize_mode == 1 || m_resize_mode == 2) {
-						undo = new QPropertyUndoCommand(this, "rect",QRectF(m_old_P1, m_old_P2), QRectF(m_P1, m_P2).normalized());
-					}
-					else if (m_resize_mode == 3)
-					{
-						undo = new QPropertyUndoCommand(this, "xRadius", m_old_xRadius, m_xRadius);
-						QPropertyUndoCommand *undo_ = new QPropertyUndoCommand(this, "yRadius", m_old_yRadius, m_yRadius, undo);
-						undo_->setAnimated();
-					}
-					break;
-				}
-				case Ellipse: {
-					undo = new QPropertyUndoCommand(this, "rect",QRectF(m_old_P1, m_old_P2), QRectF(m_P1, m_P2).normalized());
-					break;
-				}
-				case Polygon: break;
+				if (m_P1 != m_old_P1 || m_P2 != m_old_P2)
+					undo = new QPropertyUndoCommand(this, "line", QLineF(m_old_P1, m_old_P2), QLineF(m_P1, m_P2));
 			}
-			if (undo) {
-				undo->setAnimated(true, false);
+			else if (m_P1 != m_old_P1 || m_P2 != m_old_P2)
+			{
+				undo = new QPropertyUndoCommand(this, "rect", QRectF(m_old_P1, m_old_P2), QRectF(m_P1, m_P2).normalized());
 			}
-		}
-		else if (m_shapeType == Polygon && (m_polygon != m_old_polygon))
-			undo = new QPropertyUndoCommand(this, "polygon", m_old_polygon, m_polygon);
+			break;
 
-		if(undo)
-		{
+		case HandleRole::Rotate:
+			if (!qFuzzyCompare(m_transform.rotation, m_old_transform.rotation))
+				undo = new QPropertyUndoCommand(this, "rotation", m_old_transform.rotation, m_transform.rotation);
+			break;
+
+		case HandleRole::SkewEdge:
+			if (!qFuzzyCompare(m_transform.skewX, m_old_transform.skewX))
+				undo = new QPropertyUndoCommand(this, "skewX", m_old_transform.skewX, m_transform.skewX);
+			else if (!qFuzzyCompare(m_transform.skewY, m_old_transform.skewY))
+				undo = new QPropertyUndoCommand(this, "skewY", m_old_transform.skewY, m_transform.skewY);
+			break;
+
+		case HandleRole::Pivot:
+			if (m_transform.pivot != m_old_transform.pivot)
+			{
+				undo = new QUndoCommand(tr("Deplacer le centre de rotation"));
+				new QPropertyUndoCommand(this, "pos", m_old_pos, pos(), undo);
+				new QPropertyUndoCommand(this, "pivot", m_old_transform.pivot, m_transform.pivot, undo);
+			}
+			break;
+
+		case HandleRole::CornerRadius:
+			if (m_old_xRadius != m_xRadius || m_old_yRadius != m_yRadius)
+			{
+				undo = new QPropertyUndoCommand(this, "xRadius", m_old_xRadius, m_xRadius);
+				new QPropertyUndoCommand(this, "yRadius", m_old_yRadius, m_yRadius, undo);
+			}
+			break;
+
+		case HandleRole::ArcEndpoint:
+			// startAngle/endAngle changes are cosmetic-cost enough (and
+			// re-derived from each other on snap-to-full-ellipse) that
+			// they are intentionally not wrapped in undo here yet -- flag
+			// for a follow-up once ArcEndpoint dragging ships in the UI.
+			break;
+
+		case HandleRole::PathAnchor:
+			if (m_shapeType == Polygon && m_polygon != m_old_polygon)
+				undo = new QPropertyUndoCommand(this, "polygon", m_old_polygon, m_polygon);
+			break;
+
+		case HandleRole::PathControlIn:
+		case HandleRole::PathControlOut:
+			break;
+	}
+
+	if (undo)
+	{
+		if (undo->text().isEmpty())
 			undo->setText(tr("Modifier %1").arg(name()));
-			diagram()->undoStack().push(undo);
-		}
+		diagram()->undoStack().push(undo);
 	}
 }
 
@@ -856,7 +1486,7 @@ bool QetShapeItem::fromXml(const QDomElement &e)
 	QMetaEnum me = metaObject()->enumerator(metaObject()->indexOfEnumerator("ShapeType"));
 	m_shapeType = QetShapeItem::ShapeType(me.keysToValue(type.toStdString().data()));
 
-	if (m_shapeType != Polygon)
+	if (m_shapeType != Polygon && m_shapeType != Path)
 	{
 		m_P1.setX(e.attribute("x1", nullptr).toDouble());
 		m_P1.setY(e.attribute("y1", nullptr).toDouble());
@@ -869,11 +1499,67 @@ bool QetShapeItem::fromXml(const QDomElement &e)
 			setYRadius(e.attribute("ry", "0").toDouble());
 		}
 	}
-	else {
+	if (m_shapeType == Polygon)
+	{
 		for(const QDomElement& de : QET::findInDomElement(e, "points", "point")) {
 			m_polygon << QPointF(de.attribute("x", nullptr).toDouble(), de.attribute("y", nullptr).toDouble());
 		}
 	}
+	else if (m_shapeType == Path)
+	{
+		for (const QDomElement &nodeElement : QET::findInDomElement(e, "nodes", "node"))
+		{
+			PathNode node;
+			node.anchor = QPointF(nodeElement.attribute("x").toDouble(), nodeElement.attribute("y").toDouble());
+			const QString kind = nodeElement.attribute("kind", "corner");
+			node.kind = (kind == "smooth") ? NodeKind::Smooth
+			          : (kind == "symmetric") ? NodeKind::Symmetric
+			          : NodeKind::Corner;
+			QDomElement in = nodeElement.firstChildElement("in");
+			if (!in.isNull())
+				node.inHandle = QPointF(in.attribute("dx").toDouble(), in.attribute("dy").toDouble());
+			QDomElement out = nodeElement.firstChildElement("out");
+			if (!out.isNull())
+				node.outHandle = QPointF(out.attribute("dx").toDouble(), out.attribute("dy").toDouble());
+			m_nodes << node;
+		}
+	}
+
+	QDomElement transformElement = e.firstChildElement("transform");
+	if (!transformElement.isNull())
+	{
+		m_transform.rotation = transformElement.attribute("rotation", "0").toDouble();
+		m_transform.skewX    = transformElement.attribute("skewX", "0").toDouble();
+		m_transform.skewY    = transformElement.attribute("skewY", "0").toDouble();
+		m_transform.scaleX   = transformElement.attribute("scaleX", "1").toDouble();
+		m_transform.scaleY   = transformElement.attribute("scaleY", "1").toDouble();
+		m_transform.pivot    = QPointF(transformElement.attribute("pivotX", "0").toDouble(),
+		                                transformElement.attribute("pivotY", "0").toDouble());
+		m_pivotIsCustom = true;
+	}
+	else
+	{
+		m_transform = ShapeTransform();
+		m_transform.pivot = localRect().center();
+		m_pivotIsCustom = false;
+	}
+	setTransform(m_transform.toMatrix());
+
+	QDomElement arcElement = e.firstChildElement("arc");
+	if (!arcElement.isNull() && m_shapeType == Ellipse)
+	{
+		m_startAngle = arcElement.attribute("startAngle", "0").toDouble();
+		m_endAngle   = m_startAngle + arcElement.attribute("spanAngle", "360").toDouble();
+		const QString closure = arcElement.attribute("closure", "none");
+		m_arcClosure = (closure == "chord") ? Chord : (closure == "pie") ? Pie : NoClosure;
+	}
+
+	if (e.hasAttribute("posX") || e.hasAttribute("posY"))
+	{
+		QGraphicsItem::setPos(e.attribute("posX", "0").toDouble(),
+		                      e.attribute("posY", "0").toDouble());
+	}
+
 	setZValue(e.attribute("z", QString::number(this->zValue())).toDouble());
 
 	return (true);
@@ -897,12 +1583,12 @@ QDomElement QetShapeItem::toXml(QDomDocument &document) const
 	result.setAttribute("is_movable", bool(is_movable_));
 	result.setAttribute("closed", bool(m_closed));
 
-	if (m_shapeType != Polygon)
+	if (m_shapeType != Polygon && m_shapeType != Path)
 	{
-		result.setAttribute("x1", QString::number(mapToScene(m_P1).x()));
-		result.setAttribute("y1", QString::number(mapToScene(m_P1).y()));
-		result.setAttribute("x2", QString::number(mapToScene(m_P2).x()));
-		result.setAttribute("y2", QString::number(mapToScene(m_P2).y()));
+		result.setAttribute("x1", QString::number(m_P1.x()));
+		result.setAttribute("y1", QString::number(m_P1.y()));
+		result.setAttribute("x2", QString::number(m_P2.x()));
+		result.setAttribute("y2", QString::number(m_P2.y()));
 
 		if (m_shapeType == Rectangle)
 		{
@@ -910,19 +1596,86 @@ QDomElement QetShapeItem::toXml(QDomDocument &document) const
 			result.setAttribute("ry", QString::number(m_yRadius));
 		}
 	}
-	else
+	if (m_shapeType == Polygon)
 	{
 		QDomElement points = document.createElement("points");
 		for (QPointF p : m_polygon)
 		{
 			QDomElement point = document.createElement("point");
-			QPointF pf = mapToScene(p);
-			point.setAttribute("x", QString::number(pf.x()));
-			point.setAttribute("y", QString::number(pf.y()));
+			point.setAttribute("x", QString::number(p.x()));
+			point.setAttribute("y", QString::number(p.y()));
 			points.appendChild(point);
 		}
 		result.appendChild(points);
 	}
+	else if (m_shapeType == Path)
+	{
+		QDomElement nodes = document.createElement("nodes");
+		for (const PathNode &n : m_nodes)
+		{
+			QDomElement node = document.createElement("node");
+			node.setAttribute("x", QString::number(n.anchor.x()));
+			node.setAttribute("y", QString::number(n.anchor.y()));
+			if (n.kind != NodeKind::Corner)
+				node.setAttribute("kind", n.kind == NodeKind::Smooth ? "smooth" : "symmetric");
+			if (n.inHandle)
+			{
+				QDomElement in = document.createElement("in");
+				in.setAttribute("dx", QString::number(n.inHandle->x()));
+				in.setAttribute("dy", QString::number(n.inHandle->y()));
+				node.appendChild(in);
+			}
+			if (n.outHandle)
+			{
+				QDomElement out = document.createElement("out");
+				out.setAttribute("dx", QString::number(n.outHandle->x()));
+				out.setAttribute("dy", QString::number(n.outHandle->y()));
+				node.appendChild(out);
+			}
+			nodes.appendChild(node);
+		}
+		result.appendChild(nodes);
+	}
+
+	// Omitted entirely at identity, exactly like an absent radius today --
+	// this is what keeps old files, and files that never touch rotation,
+	// byte-for-byte unchanged.
+	if (!m_transform.isIdentity() || m_pivotIsCustom)
+	{
+		QDomElement transformElement = document.createElement("transform");
+		transformElement.setAttribute("rotation", QString::number(m_transform.rotation));
+		transformElement.setAttribute("skewX", QString::number(m_transform.skewX));
+		transformElement.setAttribute("skewY", QString::number(m_transform.skewY));
+		transformElement.setAttribute("scaleX", QString::number(m_transform.scaleX));
+		transformElement.setAttribute("scaleY", QString::number(m_transform.scaleY));
+		transformElement.setAttribute("pivotX", QString::number(m_transform.pivot.x()));
+		transformElement.setAttribute("pivotY", QString::number(m_transform.pivot.y()));
+		result.appendChild(transformElement);
+	}
+
+	if (m_shapeType == Ellipse && (!isFullEllipse() || m_arcClosure != NoClosure))
+	{
+		QDomElement arcElement = document.createElement("arc");
+		arcElement.setAttribute("startAngle", QString::number(m_startAngle));
+		arcElement.setAttribute("spanAngle", QString::number(spanAngle()));
+		if (m_arcClosure != NoClosure)
+			arcElement.setAttribute("closure", m_arcClosure == Chord ? "chord" : "pie");
+		result.appendChild(arcElement);
+	}
+
+	// pos() is meaningful now that pivot moves (and, transparently, every
+	// ordinary resize via the auto-recentring pivot -- see setRect())
+	// compensate through it rather than through m_P1/m_P2. It was never
+	// written here before; omitted at every reload it silently reset to
+	// (0,0), which is exactly the "position shifts slightly on reload"
+	// bug -- geometry and transform round-tripped correctly, but the
+	// placement component of the two together did not.
+	if (!pos().isNull())
+	{
+		result.setAttribute("posX", QString::number(pos().x()));
+		result.setAttribute("posY", QString::number(pos().y()));
+	}
+
 	result.setAttribute("z", QString::number(this->zValue()));
 
 	return(result);
@@ -937,6 +1690,21 @@ QDomElement QetShapeItem::toXml(QDomDocument &document) const
 */
 bool QetShapeItem::toDXF(const QString &filepath,const QPen &pen)
 {
+	// A non-identity transform means the shape is no longer axis-aligned
+	// in scene space: mapping just two opposite corners and building a
+	// new axis-aligned QRectF from them (the old Rectangle/Ellipse path
+	// below) would silently produce the wrong quadrilateral. Fall back to
+	// exporting the mapped outline as a polygon/polyline instead, exactly
+	// the path already used for Polygon today.
+	if (!m_transform.isIdentity() && (m_shapeType == Rectangle || m_shapeType == Ellipse))
+	{
+		const QPolygonF mappedOutline = mapToScene(outline().toFillPolygon());
+		if (m_shapeType == Rectangle || isFullEllipse())
+			Createdxf::drawPolygon(filepath, mappedOutline, Createdxf::dxfColor(pen));
+		else
+			Createdxf::drawPolyline(filepath, mappedOutline, Createdxf::dxfColor(pen));
+		return true;
+	}
 
 	switch (m_shapeType)
 	{
@@ -964,6 +1732,15 @@ bool QetShapeItem::toDXF(const QString &filepath,const QPen &pen)
 			else
 				Createdxf::drawPolyline(filepath,m_polygon,Createdxf::dxfColor(pen));
 			return true;
+		case Path:
+		{
+			const QPolygonF flattened = mapToScene(outline().toFillPolygon());
+			if (m_closed)
+				Createdxf::drawPolygon(filepath, flattened, Createdxf::dxfColor(pen));
+			else
+				Createdxf::drawPolyline(filepath, flattened, Createdxf::dxfColor(pen));
+			return true;
+		}
 		default:
 			return false;
 	}
@@ -990,8 +1767,9 @@ QString QetShapeItem::name() const
 	switch (m_shapeType) {
 		case Line:	    return tr("une ligne");
 		case Rectangle:	return tr("un rectangle");
-		case Ellipse:	return tr("une éllipse");
+		case Ellipse:	return isFullEllipse() ? tr("une éllipse") : tr("un arc");
 		case Polygon:	return tr("une polyligne");
+		case Path:	    return tr("une courbe");
 		default:	    return tr("une shape");
 	}
 }
