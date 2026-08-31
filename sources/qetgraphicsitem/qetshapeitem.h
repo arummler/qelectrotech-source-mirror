@@ -102,14 +102,15 @@ class QetShapeItem : public QetGraphicsItem
 		};
 
 		// Orthogonal to ShapeType: which handle set is currently shown.
-		// Cycled by clicking an already-selected shape without dragging --
-		// Size -> Corner -> RotateSkew -> Size for Rectangle (the only type
-		// with a Corner-radius concept), Size -> RotateSkew for everything
-		// else. Kept as separate, mutually exclusive states rather than
-		// overlaying Corner handles onto Size/RotateSkew, since showing all
-		// of them at once made the corner-radius handle indistinguishable
-		// from a resize handle in practice.
-		enum class HandleMode {Size, Corner, RotateSkew};
+		// Cycled by clicking an already-selected shape without dragging:
+		// Size -> Corner -> RotateSkew -> Size for Rectangle (the only
+		// type with a corner-radius concept); Size -> NodeEdit ->
+		// RotateSkew -> Size for Path (reveals the active node's control
+		// handles); Size -> RotateSkew -> Size for everything else. One
+		// unified click-cycle for every shape type, rather than a
+		// separate, less discoverable gesture (e.g. double-click) for any
+		// one shape's extra mode.
+		enum class HandleMode {Size, Corner, NodeEdit, RotateSkew};
 
 		// index conventions, deliberately matched to what already exists
 		// rather than invented fresh:
@@ -219,7 +220,6 @@ class QetShapeItem : public QetGraphicsItem
 		void hoverEnterEvent (QGraphicsSceneHoverEvent *event) override;
 		void hoverLeaveEvent (QGraphicsSceneHoverEvent *event) override;
 		void mousePressEvent (QGraphicsSceneMouseEvent *event) override;
-		void mouseDoubleClickEvent (QGraphicsSceneMouseEvent *event) override;
 		QVariant itemChange(
 				GraphicsItemChange change,
 				const QVariant &value) override;
@@ -236,6 +236,7 @@ class QetShapeItem : public QetGraphicsItem
 		void insertPoint();
 		void removePoint();
 		void convertToPathExplicitly();   // context-menu action; see promoteRectangleOrEllipseToPolygon()
+		void setNodeKind(int nodeIndex, NodeKind kind);   // context-menu action on a Path node
 
 		void handlerMousePressEvent(int handlerIndex);
 		void handlerMouseMoveEvent(int handlerIndex, QGraphicsSceneMouseEvent *event);
@@ -307,8 +308,7 @@ class QetShapeItem : public QetGraphicsItem
 		bool             m_deferHandleReposition = false;   // true while setPivot() is applying its two related updates together
 
 		QVector<PathNode> m_nodes;
-		bool             m_nodeEditMode = false;   // Path only, toggled by double-click; reveals the active node's control handles
-		int              m_activeNode = 0;         // which node's control handles are shown/editable in node-edit mode
+		int              m_activeNode = 0;         // which node's control handles are shown/editable in NodeEdit mode
 		QVector<PathNode> m_old_nodes;              // saved at handle press, for undo
 };
 #endif // QETSHAPEITEM_H

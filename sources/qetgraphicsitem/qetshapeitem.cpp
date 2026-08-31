@@ -30,6 +30,7 @@
 #include "../utils/qetutils.h"
 #include "../undocommand/promoteshapecommand.h"
 
+#include <QActionGroup>
 #include <QMenu>
 #include <QtCore/qmath.h>
 
@@ -439,7 +440,18 @@ void QetShapeItem::removePoints(int number)
 */
 QRectF QetShapeItem::boundingRect() const
 {
-	return shape().boundingRect().adjusted(-6, -6, 6, 6);
+	QRectF rect = shape().boundingRect().adjusted(-6, -6, 6, 6);
+
+	if (m_shapeType == Path && m_handleMode == HandleMode::NodeEdit && m_activeNode < m_nodes.size())
+	{
+		const PathNode &active = m_nodes.at(m_activeNode);
+		if (active.inHandle)
+			rect |= QRectF(active.anchor, active.anchor + *active.inHandle).normalized().adjusted(-6, -6, 6, 6);
+		if (active.outHandle)
+			rect |= QRectF(active.anchor, active.anchor + *active.outHandle).normalized().adjusted(-6, -6, 6, 6);
+	}
+
+	return rect;
 }
 
 /**
@@ -593,6 +605,33 @@ void QetShapeItem::paint(
 
 	painter->drawPath(outline());
 
+	// Tangent guide lines: connects each visible control handle back to
+	// its anchor, for the active node only (matching why only the active
+	// node's handles are shown at all -- drawing every node's tangents on
+	// a complex path would be as cluttered as every node's handles).
+	// Cosmetic on purpose, unlike the shape's own stroke: this is a UI
+	// aid, not artwork, so it should stay a constant screen width
+	// regardless of zoom or the shape's own skew -- the same reasoning
+	// that already makes the handle dots themselves ItemIgnoresTransformations.
+	if (m_shapeType == Path && m_handleMode == HandleMode::NodeEdit && m_activeNode < m_nodes.size())
+	{
+		const PathNode &active = m_nodes.at(m_activeNode);
+		if (active.inHandle || active.outHandle)
+		{
+			painter->save();
+			QPen guidePen(QColor(120, 120, 120));
+			guidePen.setStyle(Qt::DashLine);
+			guidePen.setWidthF(1.0);
+			guidePen.setCosmetic(true);
+			painter->setPen(guidePen);
+			if (active.inHandle)
+				painter->drawLine(active.anchor, active.anchor + *active.inHandle);
+			if (active.outHandle)
+				painter->drawLine(active.anchor, active.anchor + *active.outHandle);
+			painter->restore();
+		}
+	}
+
 	painter->restore();
 }
 
@@ -640,20 +679,6 @@ void QetShapeItem::mousePressEvent(QGraphicsSceneMouseEvent *event)
 	}
 }
 
-void QetShapeItem::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event)
-{
-	if (m_shapeType == Path)
-	{
-		m_nodeEditMode = !m_nodeEditMode;
-		if (m_nodeEditMode)
-			m_activeNode = 0;
-		rebuildHandles();
-		event->accept();
-		return;
-	}
-	QetGraphicsItem::mouseDoubleClickEvent(event);
-}
-
 /**
 	@brief QetShapeItem::itemChange
 	@param change
@@ -678,8 +703,13 @@ QVariant QetShapeItem::itemChange(QGraphicsItem::GraphicsItemChange change,
 				m_handleRoles.clear();
 				m_handleSlot.clear();
 			}
+			// Same reasoning as toggleHandleMode(): resetting the mode
+			// changes boundingRect()'s coverage, so Qt needs to be told
+			// before it happens, not after -- this is exactly the path
+			// that left a stale guide line behind when deselecting a
+			// Path with a far-dragged handle still active.
+			prepareGeometryChange();
 			m_handleMode = HandleMode::Size;
-			m_nodeEditMode = false;
 		}
 	}
 	else if (change == ItemPositionHasChanged || change == ItemTransformHasChanged) {
@@ -747,7 +777,7 @@ void QetShapeItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event)
 
 	const bool canConvertToPath = (m_shapeType == Rectangle || m_shapeType == Ellipse);
 
-	if (m_shapeType == QetShapeItem::Polygon || canConvertToPath)
+	if (m_shapeType == QetShapeItem::Polygon || m_shapeType == QetShapeItem::Path || canConvertToPath)
 	{
 		if (diagram()->selectedItems().isEmpty()) {
 			this->setSelected(true);
@@ -789,6 +819,46 @@ void QetShapeItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event)
 						}
 					}
 
+					if (m_shapeType == QetShapeItem::Path && !m_nodes.isEmpty())
+					{
+						// Nearest node to the click, not "whichever tiny
+						// handle you managed to hit exactly" -- the latter
+						// is finicky for a right-click (no drag feedback
+						// to correct your aim), and silently found nothing
+						// once NodeEdit mode added PathControlIn/Out
+						// handles right next to the anchor, which this
+						// menu never checked for.
+						const QPointF localClick = mapFromScene(event->scenePos());
+						int nearest = 0;
+						qreal bestDist = -1;
+						for (int i = 0; i < m_nodes.size(); ++i)
+						{
+							const QPointF d = m_nodes.at(i).anchor - localClick;
+							const qreal dist = d.x() * d.x() + d.y() * d.y();
+							if (bestDist < 0 || dist < bestDist) { bestDist = dist; nearest = i; }
+						}
+
+						QMenu *nodeMenu = menu.data()->addMenu(tr("Nœud le plus proche"));
+						QAction *toSmooth    = nodeMenu->addAction(tr("Lisse"));
+						QAction *toSymmetric = nodeMenu->addAction(tr("Symétrique"));
+						QAction *toCorner    = nodeMenu->addAction(tr("Anguleux"));
+
+						auto *group = new QActionGroup(nodeMenu);
+						for (QAction *a : {toSmooth, toSymmetric, toCorner})
+						{
+							a->setCheckable(true);
+							a->setActionGroup(group);
+						}
+						const NodeKind currentKind = m_nodes.at(nearest).kind;
+						toSmooth->setChecked(currentKind == NodeKind::Smooth);
+						toSymmetric->setChecked(currentKind == NodeKind::Symmetric);
+						toCorner->setChecked(currentKind == NodeKind::Corner);
+
+						connect(toSmooth,    &QAction::triggered, this, [this, nearest]() { setNodeKind(nearest, NodeKind::Smooth); });
+						connect(toSymmetric, &QAction::triggered, this, [this, nearest]() { setNodeKind(nearest, NodeKind::Symmetric); });
+						connect(toCorner,    &QAction::triggered, this, [this, nearest]() { setNodeKind(nearest, NodeKind::Corner); });
+					}
+
 					if (canConvertToPath)
 					{
 						QAction *convert = menu.data()->addAction(tr("Convertir en polyligne"));
@@ -817,14 +887,29 @@ void QetShapeItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event)
 */
 void QetShapeItem::toggleHandleMode()
 {
-	const bool hasCornerState = (m_shapeType == Rectangle);
+	// Changing m_handleMode changes what boundingRect() covers (it only
+	// includes the active node's guide-line extent while in NodeEdit
+	// mode) -- without this, leaving NodeEdit with a far-flung handle
+	// left exactly the same kind of ghost fixed for m_activeNode changes
+	// a moment ago, just triggered by a different state change.
+	prepareGeometryChange();
 
-	if (m_handleMode == HandleMode::Size)
-		m_handleMode = hasCornerState ? HandleMode::Corner : HandleMode::RotateSkew;
-	else if (m_handleMode == HandleMode::Corner)
-		m_handleMode = HandleMode::RotateSkew;
+	if (m_shapeType == Rectangle)
+	{
+		if (m_handleMode == HandleMode::Size) m_handleMode = HandleMode::Corner;
+		else if (m_handleMode == HandleMode::Corner) m_handleMode = HandleMode::RotateSkew;
+		else m_handleMode = HandleMode::Size;
+	}
+	else if (m_shapeType == Path)
+	{
+		if (m_handleMode == HandleMode::Size) { m_handleMode = HandleMode::NodeEdit; m_activeNode = 0; }
+		else if (m_handleMode == HandleMode::NodeEdit) m_handleMode = HandleMode::RotateSkew;
+		else m_handleMode = HandleMode::Size;
+	}
 	else
-		m_handleMode = HandleMode::Size;
+	{
+		m_handleMode = (m_handleMode == HandleMode::Size) ? HandleMode::RotateSkew : HandleMode::Size;
+	}
 
 	rebuildHandles();
 }
@@ -1057,14 +1142,19 @@ void QetShapeItem::rebuildHandles()
 			{
 				for (int i = 0; i < m_nodes.size(); ++i)
 					addRole(HandleRole::PathAnchor, i);
-				if (m_nodeEditMode && m_activeNode < m_nodes.size())
+			}
+			else if (m_handleMode == HandleMode::NodeEdit)
+			{
+				for (int i = 0; i < m_nodes.size(); ++i)
+					addRole(HandleRole::PathAnchor, i);
+				if (m_activeNode < m_nodes.size())
 				{
 					const PathNode &active = m_nodes.at(m_activeNode);
 					if (active.inHandle)  addRole(HandleRole::PathControlIn, m_activeNode);
 					if (active.outHandle) addRole(HandleRole::PathControlOut, m_activeNode);
 				}
 			}
-			else
+			else // RotateSkew
 			{
 				for (int i = 0; i < m_nodes.size(); ++i)
 					addRole(HandleRole::Rotate, i);
@@ -1243,6 +1333,84 @@ void QetShapeItem::convertToPathExplicitly()
 		diagram()->undoStack().push(undo);
 	}
 
+	rebuildHandles();
+}
+
+/**
+	@brief QetShapeItem::setNodeKind
+	Change a Path node's kind, via the context menu rather than a drag.
+	Promoting a Corner node to Smooth or Symmetric synthesizes whichever
+	handles it doesn't already have, from its neighbours -- direction
+	toward the far neighbour, length a third of the distance to the near
+	one, the same simple heuristic most vector editors use for a "make
+	smooth" action. Demoting to Corner leaves any existing handles
+	untouched (a Corner node can still have handles -- see
+	dragPathControlHandle() -- it just stops forcing them to stay
+	linked). The affected node also becomes the active one, in NodeEdit
+	mode, so the result is immediately visible rather than a change to
+	data you'd otherwise have to click into node-edit mode again to see.
+*/
+void QetShapeItem::setNodeKind(int nodeIndex, NodeKind kind)
+{
+	if (nodeIndex < 0 || nodeIndex >= m_nodes.size())
+		return;
+
+	const QDomElement before = snapshotXml();
+
+	prepareGeometryChange();
+	PathNode &node = m_nodes[nodeIndex];
+	node.kind = kind;
+
+	if (kind != NodeKind::Corner)
+	{
+		const int count = m_nodes.size();
+		const bool hasPrev = (nodeIndex > 0) || (m_closed && count > 1);
+		const bool hasNext = (nodeIndex < count - 1) || (m_closed && count > 1);
+		const QPointF prevAnchor = hasPrev ? m_nodes.at((nodeIndex - 1 + count) % count).anchor : node.anchor;
+		const QPointF nextAnchor = hasNext ? m_nodes.at((nodeIndex + 1) % count).anchor : node.anchor;
+
+		QPointF tangent = nextAnchor - prevAnchor;
+		const qreal tangentLength = qSqrt(tangent.x() * tangent.x() + tangent.y() * tangent.y());
+		if (tangentLength > 1e-6)
+			tangent /= tangentLength;
+
+		if (!node.outHandle && hasNext)
+		{
+			const QPointF toNext = nextAnchor - node.anchor;
+			const qreal len = qSqrt(toNext.x() * toNext.x() + toNext.y() * toNext.y()) / 3.0;
+			node.outHandle = tangent * len;
+		}
+		if (!node.inHandle && hasPrev)
+		{
+			const QPointF toPrev = prevAnchor - node.anchor;
+			const qreal len = qSqrt(toPrev.x() * toPrev.x() + toPrev.y() * toPrev.y()) / 3.0;
+			node.inHandle = -tangent * len;
+		}
+
+		if (kind == NodeKind::Symmetric && node.inHandle && node.outHandle)
+		{
+			// Equalize lengths so the two handles are true mirrors from
+			// the start, not just collinear -- otherwise a node promoted
+			// straight to Symmetric would look identical to Smooth until
+			// the next drag "fixed" it.
+			const qreal inLen  = qSqrt(node.inHandle->x()  * node.inHandle->x()  + node.inHandle->y()  * node.inHandle->y());
+			const qreal outLen = qSqrt(node.outHandle->x() * node.outHandle->x() + node.outHandle->y() * node.outHandle->y());
+			const qreal avg = (inLen + outLen) / 2.0;
+			if (inLen  > 1e-6) node.inHandle  = *node.inHandle  * (avg / inLen);
+			if (outLen > 1e-6) node.outHandle = *node.outHandle * (avg / outLen);
+		}
+	}
+
+	const QDomElement after = snapshotXml();
+	if (diagram())
+	{
+		auto *undo = new PromoteShapeCommand(this, before, after);
+		undo->setText(tr("Modifier le type d'un nœud"));
+		diagram()->undoStack().push(undo);
+	}
+
+	m_activeNode = nodeIndex;
+	m_handleMode = HandleMode::NodeEdit;
 	rebuildHandles();
 }
 
@@ -1615,8 +1783,9 @@ void QetShapeItem::handlerMouseReleaseEvent(int handlerIndex)
 			// at press: rebuildHandles() destroys and recreates every
 			// handler item, which would pull the rug out from under the
 			// very drag gesture currently in progress if done any earlier.
-			if (m_shapeType == Path && m_nodeEditMode && slot != m_activeNode)
+			if (m_shapeType == Path && m_handleMode == HandleMode::NodeEdit && slot != m_activeNode)
 			{
+				prepareGeometryChange();
 				m_activeNode = slot;
 				rebuildHandles();
 			}
