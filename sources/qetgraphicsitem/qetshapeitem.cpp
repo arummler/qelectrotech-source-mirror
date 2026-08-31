@@ -33,6 +33,7 @@
 #include <QActionGroup>
 #include <QMenu>
 #include <QtCore/qmath.h>
+#include <utility>
 
 /**
 	@brief QetShapeItem::QetShapeItem
@@ -838,6 +839,15 @@ void QetShapeItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event)
 							if (bestDist < 0 || dist < bestDist) { bestDist = dist; nearest = i; }
 						}
 
+						const std::pair<int, qreal> segmentHit = nearestPathSegment(localClick);
+						if (segmentHit.first >= 0)
+						{
+							const int seg = segmentHit.first;
+							const qreal t = segmentHit.second;
+							QAction *insertAct = menu.data()->addAction(tr("Ajouter un point"));
+							connect(insertAct, &QAction::triggered, this, [this, seg, t]() { insertPathPoint(seg, t); });
+						}
+
 						QMenu *nodeMenu = menu.data()->addMenu(tr("Nœud le plus proche"));
 						QAction *toSmooth    = nodeMenu->addAction(tr("Lisse"));
 						QAction *toSymmetric = nodeMenu->addAction(tr("Symétrique"));
@@ -857,6 +867,12 @@ void QetShapeItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event)
 						connect(toSmooth,    &QAction::triggered, this, [this, nearest]() { setNodeKind(nearest, NodeKind::Smooth); });
 						connect(toSymmetric, &QAction::triggered, this, [this, nearest]() { setNodeKind(nearest, NodeKind::Symmetric); });
 						connect(toCorner,    &QAction::triggered, this, [this, nearest]() { setNodeKind(nearest, NodeKind::Corner); });
+
+						if (m_nodes.size() > 2)
+						{
+							QAction *removeAct = menu.data()->addAction(tr("Supprimer le nœud le plus proche"));
+							connect(removeAct, &QAction::triggered, this, [this, nearest]() { removePathPoint(nearest); });
+						}
 					}
 
 					if (canConvertToPath)
@@ -1302,6 +1318,152 @@ void QetShapeItem::promoteRectangleOrEllipseToPolygon(int detachedResizeIndex, c
 	if (diagram())
 	{
 		auto *undo = new PromoteShapeCommand(this, before, after);
+		diagram()->undoStack().push(undo);
+	}
+
+	rebuildHandles();
+}
+
+/**
+	@brief QetShapeItem::nearestPathSegment
+	Nearest point on the whole curve to localPos, found by coarse sampling
+	each segment's cubic Bezier (24 samples is plenty for a context-menu
+	pick -- this only has to be close enough to feel right, not exact).
+	Returns {-1, 0} if there are fewer than two nodes to form a segment.
+*/
+std::pair<int, qreal> QetShapeItem::nearestPathSegment(const QPointF &localPos) const
+{
+	const int count = m_nodes.size();
+	if (count < 2)
+		return std::make_pair(-1, 0.0);
+
+	const int segments = m_closed ? count : count - 1;
+	int bestSegment = -1;
+	qreal bestT = 0.0;
+	qreal bestDistSq = -1;
+
+	for (int i = 0; i < segments; ++i)
+	{
+		const PathNode &a = m_nodes.at(i);
+		const PathNode &b = m_nodes.at((i + 1) % count);
+		const QPointF p0 = a.anchor;
+		const QPointF p1 = a.anchor + a.outHandle.value_or(QPointF());
+		const QPointF p2 = b.anchor + b.inHandle.value_or(QPointF());
+		const QPointF p3 = b.anchor;
+
+		const int samples = 24;
+		for (int s = 0; s <= samples; ++s)
+		{
+			const qreal t = qreal(s) / samples;
+			const qreal u = 1 - t;
+			const QPointF pt = u*u*u*p0 + 3*u*u*t*p1 + 3*u*t*t*p2 + t*t*t*p3;
+			const QPointF d = pt - localPos;
+			const qreal distSq = d.x() * d.x() + d.y() * d.y();
+			if (bestDistSq < 0 || distSq < bestDistSq)
+			{
+				bestDistSq = distSq;
+				bestSegment = i;
+				bestT = t;
+			}
+		}
+	}
+	return {bestSegment, bestT};
+}
+
+/**
+	@brief QetShapeItem::insertPathPoint
+	Splits the cubic Bezier between node segmentIndex and its successor at
+	parameter t, via De Casteljau's algorithm -- the two resulting halves
+	are guaranteed to retrace the original curve exactly (no kink at the
+	seam), which a naive "just add a point at this position and guess new
+	handles" approach cannot promise. When neither side of the segment
+	actually has a handle (a plain straight run between two Corner-ish
+	points), this degrades to a plain linear split with no handles at all
+	on the new node, rather than introducing phantom zero-effect handles
+	on what the user sees as a straight line.
+*/
+void QetShapeItem::insertPathPoint(int segmentIndex, qreal t)
+{
+	const QDomElement before = snapshotXml();
+
+	prepareGeometryChange();
+	const int count = m_nodes.size();
+	const int nextIndex = (segmentIndex + 1) % count;
+	PathNode &a = m_nodes[segmentIndex];
+	PathNode &b = m_nodes[nextIndex];
+
+	const QPointF p0 = a.anchor;
+	const QPointF p1 = a.anchor + a.outHandle.value_or(QPointF());
+	const QPointF p2 = b.anchor + b.inHandle.value_or(QPointF());
+	const QPointF p3 = b.anchor;
+
+	PathNode mid;
+	if (!a.outHandle && !b.inHandle)
+	{
+		mid.anchor = p0 + (p3 - p0) * t;
+		mid.kind = NodeKind::Corner;
+	}
+	else
+	{
+		const QPointF p01   = p0   + (p1   - p0)   * t;
+		const QPointF p12   = p1   + (p2   - p1)   * t;
+		const QPointF p23   = p2   + (p3   - p2)   * t;
+		const QPointF p012  = p01  + (p12  - p01)  * t;
+		const QPointF p123  = p12  + (p23  - p12)  * t;
+		const QPointF p0123 = p012 + (p123 - p012) * t;
+
+		mid.anchor = p0123;
+		mid.kind = NodeKind::Smooth;   // De Casteljau guarantees tangent continuity through the split point
+		mid.inHandle  = p012 - p0123;
+		mid.outHandle = p123 - p0123;
+
+		a.outHandle = p01 - p0;
+		b.inHandle  = p23 - p3;
+	}
+
+	// Insert right before b's current position -- except when the split
+	// segment is the closed path's wrap-around (last node back to
+	// first): inserting there at the *end* of the array places the new
+	// node correctly between old-last and old-first without shifting
+	// every other node's index.
+	m_nodes.insert(nextIndex == 0 ? m_nodes.size() : nextIndex, mid);
+
+	const QDomElement after = snapshotXml();
+	if (diagram())
+	{
+		auto *undo = new PromoteShapeCommand(this, before, after);
+		undo->setText(tr("Ajouter un point à une courbe"));
+		diagram()->undoStack().push(undo);
+	}
+
+	rebuildHandles();
+}
+
+/**
+	@brief QetShapeItem::removePathPoint
+	Deletes a node outright and lets its two former neighbours connect
+	directly using their own existing handles -- no attempt to re-fit a
+	single curve that approximates the old shape through where the point
+	used to be. That's a much harder (and inherently lossy) problem; this
+	is the same plain "just delete it" convention most editors default to.
+*/
+void QetShapeItem::removePathPoint(int nodeIndex)
+{
+	if (nodeIndex < 0 || nodeIndex >= m_nodes.size() || m_nodes.size() <= 2)
+		return;
+
+	const QDomElement before = snapshotXml();
+
+	prepareGeometryChange();
+	m_nodes.removeAt(nodeIndex);
+	if (m_activeNode >= m_nodes.size())
+		m_activeNode = qMax(0, m_nodes.size() - 1);
+
+	const QDomElement after = snapshotXml();
+	if (diagram())
+	{
+		auto *undo = new PromoteShapeCommand(this, before, after);
+		undo->setText(tr("Supprimer un point d'une courbe"));
 		diagram()->undoStack().push(undo);
 	}
 

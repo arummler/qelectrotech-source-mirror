@@ -24,6 +24,7 @@
 
 #include <QPen>
 #include <optional>
+#include <utility>
 
 class QDomElement;
 class QDomDocument;
@@ -257,6 +258,9 @@ class QetShapeItem : public QetGraphicsItem
 		void dragPathControlHandle(bool isOutHandle, int nodeIndex, const QPointF &localPos, Qt::KeyboardModifiers mods);
 
 		void promoteRectangleOrEllipseToPolygon(int detachedResizeIndex, const QPointF &newLocalPos);
+		std::pair<int, qreal> nearestPathSegment(const QPointF &localPos) const;   // {segmentIndex, t}, -1 if fewer than 2 nodes
+		void insertPathPoint(int segmentIndex, qreal t);   // De Casteljau split -- see .cpp for why
+		void removePathPoint(int nodeIndex);
 		QDomElement snapshotXml() const;   // helper for PromoteShapeCommand: toXml() into a throwaway document
 
 		QRectF localRect() const;
