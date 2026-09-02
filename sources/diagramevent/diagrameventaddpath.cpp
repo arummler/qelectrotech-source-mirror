@@ -117,7 +117,7 @@ void DiagramEventAddPath::mousePressEvent(QGraphicsSceneMouseEvent *event)
 		m_nodes << node;
 		m_nodes << node;   // live preview, tracks the mouse from here on
 		m_shape_item->setPathNodes(m_nodes);
-		m_shape_item->setActiveNode(0);
+		m_shape_item->enableNodeEditMode();
 
 		m_dragging_node = 0;
 		event->setAccepted(true);
@@ -142,7 +142,7 @@ void DiagramEventAddPath::mousePressEvent(QGraphicsSceneMouseEvent *event)
 	m_nodes << preview;
 
 	m_shape_item->setPathNodes(m_nodes);
-	m_shape_item->setActiveNode(m_dragging_node);
+	m_shape_item->enableNodeEditMode();
 	event->setAccepted(true);
 }
 

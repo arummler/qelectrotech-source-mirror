@@ -106,11 +106,11 @@ class QetShapeItem : public QetGraphicsItem
 		// Cycled by clicking an already-selected shape without dragging:
 		// Size -> Corner -> RotateSkew -> Size for Rectangle (the only
 		// type with a corner-radius concept); Size -> NodeEdit ->
-		// RotateSkew -> Size for Path (reveals the active node's control
-		// handles); Size -> RotateSkew -> Size for everything else. One
-		// unified click-cycle for every shape type, rather than a
-		// separate, less discoverable gesture (e.g. double-click) for any
-		// one shape's extra mode.
+		// RotateSkew -> Size for Path (reveals control handles for
+		// every node that has any); Size -> RotateSkew -> Size for
+		// everything else. One unified click-cycle for every shape
+		// type, rather than a separate, less discoverable gesture
+		// (e.g. double-click) for any one shape's extra mode.
 		enum class HandleMode {Size, Corner, NodeEdit, RotateSkew};
 
 		// index conventions, deliberately matched to what already exists
@@ -188,7 +188,7 @@ class QetShapeItem : public QetGraphicsItem
 		QPointF pivot() const {return m_transform.pivot;}
 		void setPivot(const QPointF &pivot); // moves the pivot handle: compensates pos() so the shape does not jump
 		void resetPivotToBoundingRectCenter();
-		void setActiveNode(int index);   // Path only: makes this node active and switches to NodeEdit, so its control handles become visible
+		void enableNodeEditMode();   // Path only: switches to NodeEdit mode, so every node's control handles become visible
 
 			//Arc: only meaningful when shapeType() == Ellipse. A full
 			//ellipse is just an arc with span 360 -- there is no separate
@@ -317,7 +317,6 @@ class QetShapeItem : public QetGraphicsItem
 		bool             m_deferHandleReposition = false;   // true while setPivot() is applying its two related updates together
 
 		QVector<PathNode> m_nodes;
-		int              m_activeNode = 0;         // which node's control handles are shown/editable in NodeEdit mode
 		QVector<PathNode> m_old_nodes;              // saved at handle press, for undo
 		int              m_curveDragSegment = -1;   // >=0 while dragging the curve itself (not a handle) between two nodes
 		qreal            m_curveDragT = 0;          // parameter along that segment where the drag started
