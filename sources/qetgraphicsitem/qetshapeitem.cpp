@@ -330,6 +330,24 @@ void QetShapeItem::resetPivotToBoundingRectCenter()
 }
 
 /**
+	@brief QetShapeItem::setActiveNode
+	Makes this Path node the active one and switches into NodeEdit mode,
+	so its control handles (and the tangent guide lines drawn in paint())
+	become visible -- the same visual feedback normal editing already
+	gets via the context menu's node-kind actions, made available to the
+	pen tool too so a node's handles are visible *as they're being
+	dragged into existence*, not only afterward.
+*/
+void QetShapeItem::setActiveNode(int index)
+{
+	if (m_shapeType != Path || index < 0 || index >= m_nodes.size())
+		return;
+	m_activeNode = index;
+	m_handleMode = HandleMode::NodeEdit;
+	rebuildHandles();
+}
+
+/**
 	@brief QetShapeItem::setStartAngle / setEndAngle
 	Only meaningful for Ellipse. Dragging one endpoint onto the other
 	(span within 5 degrees of a full turn) snaps back to a full ellipse --
@@ -389,7 +407,18 @@ void QetShapeItem::setPathNodes(const QVector<PathNode> &nodes)
 {
 	prepareGeometryChange();
 	m_nodes = nodes;
-	repositionHandles();
+	if (!m_pivotIsCustom)
+		resetPivotToBoundingRectCenter();
+	// Always a full rebuild, not just a reposition: unlike the drag
+	// handlers (dragPathAnchor, dragPathControlHandle), which mutate
+	// m_nodes in place and are called from a handle's own mouse-move
+	// event -- where destroying that handle mid-gesture would be a real
+	// problem -- this setter is only ever called from outside that
+	// pipeline (currently: the pen tool, adding a new node with every
+	// click). The node *count* routinely changes here, and
+	// repositionHandles() has no way to notice that on its own; it only
+	// moves whatever handles already exist.
+	rebuildHandles();
 }
 
 /**

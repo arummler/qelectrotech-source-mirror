@@ -188,6 +188,7 @@ class QetShapeItem : public QetGraphicsItem
 		QPointF pivot() const {return m_transform.pivot;}
 		void setPivot(const QPointF &pivot); // moves the pivot handle: compensates pos() so the shape does not jump
 		void resetPivotToBoundingRectCenter();
+		void setActiveNode(int index);   // Path only: makes this node active and switches to NodeEdit, so its control handles become visible
 
 			//Arc: only meaningful when shapeType() == Ellipse. A full
 			//ellipse is just an arc with span 360 -- there is no separate

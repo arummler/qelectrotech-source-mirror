@@ -318,6 +318,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/diagramevent/diagrameventaddimage.h
   ${QET_DIR}/sources/diagramevent/diagrameventaddshape.cpp
   ${QET_DIR}/sources/diagramevent/diagrameventaddshape.h
+  ${QET_DIR}/sources/diagramevent/diagrameventaddpath.cpp
+  ${QET_DIR}/sources/diagramevent/diagrameventaddpath.h
   ${QET_DIR}/sources/diagramevent/diagrameventaddtext.cpp
   ${QET_DIR}/sources/diagramevent/diagrameventaddtext.h
   ${QET_DIR}/sources/diagramevent/diagrameventinterface.cpp
@@ -518,6 +520,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/qetgraphicsitem/qetgraphicsitem.h
   ${QET_DIR}/sources/qetgraphicsitem/qetshapeitem.cpp
   ${QET_DIR}/sources/qetgraphicsitem/qetshapeitem.h
+  ${QET_DIR}/sources/qetgraphicsitem/shapetransform.cpp
+  ${QET_DIR}/sources/qetgraphicsitem/shapetransform.h
   ${QET_DIR}/sources/qetgraphicsitem/qgraphicsitemutility.cpp
   ${QET_DIR}/sources/qetgraphicsitem/qgraphicsitemutility.h
   ${QET_DIR}/sources/qetgraphicsitem/reportelement.cpp
@@ -790,6 +794,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/undocommand/setautonumcontextcommand.h
   ${QET_DIR}/sources/undocommand/rotateselectioncommand.cpp
   ${QET_DIR}/sources/undocommand/rotateselectioncommand.h
+  ${QET_DIR}/sources/undocommand/promoteshapecommand.cpp
+  ${QET_DIR}/sources/undocommand/promoteshapecommand.h
   ${QET_DIR}/sources/undocommand/rotatetextscommand.cpp
   ${QET_DIR}/sources/undocommand/rotatetextscommand.h
   ${QET_DIR}/sources/undocommand/movegraphicsitemcommand.cpp

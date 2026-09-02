@@ -27,6 +27,7 @@
 #include "diagramevent/diagrameventaddpdf.h"
 #endif
 #include "diagramevent/diagrameventaddshape.h"
+#include "diagramevent/diagrameventaddpath.h"
 #include "diagramevent/diagrameventaddtext.h"
 #include "diagramview.h"
 #include "elementspanelwidget.h"
@@ -727,6 +728,7 @@ void QETDiagramEditor::setUpActions()
 	QAction *add_rectangle = m_add_item_actions_group.addAction(QET::Icons::PartRectangle, tr("Ajouter un rectangle"));
 	QAction *add_ellipse   = m_add_item_actions_group.addAction(QET::Icons::PartEllipse,   tr("Ajouter une ellipse"));
 	QAction *add_polyline  = m_add_item_actions_group.addAction(QET::Icons::PartPolygon,   tr("Ajouter une polyligne"));
+	QAction *add_path      = m_add_item_actions_group.addAction(QET::Icons::PartPolygon,   tr("Ajouter une courbe"));
 	QAction *add_terminal_strip = m_add_item_actions_group.addAction(QET::Icons::TerminalStrip, tr("Ajouter un plan de bornes"));
 
 	add_text     ->setStatusTip(tr("Ajoute un champ de texte sur le folio actuel"));
@@ -738,6 +740,7 @@ void QETDiagramEditor::setUpActions()
 	add_rectangle->setStatusTip(tr("Ajoute un rectangle sur le folio actuel"));
 	add_ellipse  ->setStatusTip(tr("Ajoute une ellipse sur le folio actuel"));
 	add_polyline ->setStatusTip(tr("Ajoute une polyligne sur le folio actuel"));
+	add_path     ->setStatusTip(tr("Ajoute une courbe de Bézier sur le folio actuel"));
 	add_terminal_strip->setStatusTip(tr("Ajoute un plan de bornier sur le folio actuel"));
 
 	add_text     ->setData(QStringLiteral("text"));
@@ -749,6 +752,7 @@ void QETDiagramEditor::setUpActions()
 	add_rectangle->setData(QStringLiteral("rectangle"));
 	add_ellipse  ->setData(QStringLiteral("ellipse"));
 	add_polyline ->setData(QStringLiteral("polyline"));
+	add_path     ->setData(QStringLiteral("path"));
 	add_terminal_strip->setData(QStringLiteral("terminal_strip"));
 
 	add_text->setCheckable(true);
@@ -756,6 +760,7 @@ void QETDiagramEditor::setUpActions()
 	add_rectangle->setCheckable(true);
 	add_ellipse->setCheckable(true);
 	add_polyline->setCheckable(true);
+	add_path->setCheckable(true);
 
 	connect(&m_add_item_actions_group, &QActionGroup::triggered, this, &QETDiagramEditor::addItemGroupTriggered);
 
@@ -1567,6 +1572,16 @@ void QETDiagramEditor::addItemGroupTriggered(QAction *action)
 	{
 		diagram_event = new DiagramEventAddShape (d, QetShapeItem::Polygon);
 		statusBar()-> showMessage(tr("Double-click pour terminer la forme, Click droit pour annuler le dernier point"));
+		connect(diagram_event, &DiagramEventInterface::destroyed, [this]() {
+		statusBar()->clearMessage();
+		});
+	}
+	else if (value == "path")
+	{
+		diagram_event = new DiagramEventAddPath (d);
+		statusBar()->showMessage(tr("Clic: point anguleux. Cliquer-glisser: point courbe. "
+		                             "Clic sur le premier point: fermer. Échap/Entrée: terminer. "
+		                             "Clic droit: annuler le dernier point."));
 		connect(diagram_event, &DiagramEventInterface::destroyed, [this]() {
 		statusBar()->clearMessage();
 		});
