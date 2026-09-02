@@ -222,6 +222,8 @@ class QetShapeItem : public QetGraphicsItem
 		void hoverEnterEvent (QGraphicsSceneHoverEvent *event) override;
 		void hoverLeaveEvent (QGraphicsSceneHoverEvent *event) override;
 		void mousePressEvent (QGraphicsSceneMouseEvent *event) override;
+		void mouseMoveEvent (QGraphicsSceneMouseEvent *event) override;
+		void mouseReleaseEvent (QGraphicsSceneMouseEvent *event) override;
 		QVariant itemChange(
 				GraphicsItemChange change,
 				const QVariant &value) override;
@@ -257,6 +259,8 @@ class QetShapeItem : public QetGraphicsItem
 		void dragCornerRadius(int which,       const QPointF &localPos);
 		void dragPathAnchor  (int which,       const QPointF &localPos);
 		void dragPathControlHandle(bool isOutHandle, int nodeIndex, const QPointF &localPos, Qt::KeyboardModifiers mods);
+		void mirrorOppositeHandle(PathNode &node, bool justChangedIsOut);   // shared by dragPathControlHandle() and dragCurveSegment()
+		void dragCurveSegment(int segmentIndex, qreal t, const QPointF &localPos);   // Inkscape-style "grab the curve itself"
 
 		void promoteRectangleOrEllipseToPolygon(int detachedResizeIndex, const QPointF &newLocalPos);
 		std::pair<int, qreal> nearestPathSegment(const QPointF &localPos) const;   // {segmentIndex, t}, -1 if fewer than 2 nodes
@@ -315,5 +319,10 @@ class QetShapeItem : public QetGraphicsItem
 		QVector<PathNode> m_nodes;
 		int              m_activeNode = 0;         // which node's control handles are shown/editable in NodeEdit mode
 		QVector<PathNode> m_old_nodes;              // saved at handle press, for undo
+		int              m_curveDragSegment = -1;   // >=0 while dragging the curve itself (not a handle) between two nodes
+		qreal            m_curveDragT = 0;          // parameter along that segment where the drag started
+		QPointF          m_curveDragOriginalP1, m_curveDragOriginalP2;   // absolute control points at drag start, fixed for the whole drag
+		QPointF          m_curveDragPressPos;        // local position at press, to tell a plain click from a real drag
+		bool             m_curveDragEngaged = false; // false until the drag actually exceeds a small threshold
 };
 #endif // QETSHAPEITEM_H

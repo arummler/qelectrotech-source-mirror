@@ -697,6 +697,37 @@ void QetShapeItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *event)
 */
 void QetShapeItem::mousePressEvent(QGraphicsSceneMouseEvent *event)
 {
+	// Grabbing the curve itself (not a handle -- those are separate
+	// QetGraphicsHandlerItems and take precedence automatically, since
+	// Qt only delivers this event here when the click missed all of
+	// them) reshapes the segment under the cursor -- but only once the
+	// press actually turns into a drag. A plain click here (press+release
+	// with no real movement) is exactly the same gesture that cycles the
+	// handle mode elsewhere, and NodeEdit mode's own click-on-the-curve
+	// hit-test matches almost any click that landed on the shape at all
+	// -- so deciding "reshape vs. cycle" at press time would make it
+	// impossible to ever click onward to RotateSkew once in NodeEdit.
+	// Deferred to mouseMoveEvent/mouseReleaseEvent instead, below.
+	if (m_shapeType == Path && m_handleMode == HandleMode::NodeEdit && event->button() == Qt::LeftButton)
+	{
+		const auto hit = nearestPathSegment(event->pos());
+		if (hit.first >= 0)
+		{
+			const int count = m_nodes.size();
+			const PathNode &a = m_nodes.at(hit.first);
+			const PathNode &b = m_nodes.at((hit.first + 1) % count);
+			m_curveDragSegment = hit.first;
+			m_curveDragT = hit.second;
+			m_curveDragOriginalP1 = a.anchor + a.outHandle.value_or(QPointF());
+			m_curveDragOriginalP2 = b.anchor + b.inHandle.value_or(QPointF());
+			m_curveDragPressPos = event->pos();
+			m_curveDragEngaged = false;
+			m_old_nodes = m_nodes;
+			event->accept();
+			return;
+		}
+	}
+
 	const bool wasAlreadySelected = isSelected();
 	event->ignore();
 	QetGraphicsItem::mousePressEvent(event);
@@ -707,6 +738,75 @@ void QetShapeItem::mousePressEvent(QGraphicsSceneMouseEvent *event)
 			toggleHandleMode();
 		event->accept();
 	}
+}
+
+/**
+	@brief QetShapeItem::mouseMoveEvent
+	Only ever does something different from the base class while a
+	curve-segment drag (started in mousePressEvent above) is pending or
+	active; otherwise this is exactly QetGraphicsItem's own whole-shape-
+	move handling (grid-snapped drag, multi-selection movement via
+	diagram()->elementsMover()), untouched.
+*/
+void QetShapeItem::mouseMoveEvent(QGraphicsSceneMouseEvent *event)
+{
+	if (m_curveDragSegment >= 0)
+	{
+		if (!m_curveDragEngaged)
+		{
+			if (QLineF(m_curveDragPressPos, event->pos()).length() < 3.0)
+				return;   // still just a (so far) plain click -- wait and see, don't reshape yet
+			m_curveDragEngaged = true;
+		}
+
+		QPointF scenePos = event->scenePos();
+		if (event->modifiers() != Qt::ControlModifier)
+			scenePos = Diagram::snapToGrid(scenePos);
+		dragCurveSegment(m_curveDragSegment, m_curveDragT, mapFromScene(scenePos));
+		event->accept();
+		return;
+	}
+	QetGraphicsItem::mouseMoveEvent(event);
+}
+
+/**
+	@brief QetShapeItem::mouseReleaseEvent
+	If the press in mousePressEvent never turned into a real drag, this
+	was just a plain click -- cycle the handle mode, exactly like a click
+	anywhere else on an already-selected shape would. Otherwise commit
+	the curve-drag's undo entry, reusing the same generic before/after
+	XML snapshot mechanism as every other Path edit. With no curve-drag
+	pending at all, this defers entirely to QetGraphicsItem's own release
+	handling (which ends the whole-shape-move gesture via elementsMover()).
+*/
+void QetShapeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent *event)
+{
+	if (m_curveDragSegment >= 0)
+	{
+		if (m_curveDragEngaged)
+		{
+			if (m_nodes != m_old_nodes && diagram())
+			{
+				const QVector<PathNode> after = m_nodes;
+				m_nodes = m_old_nodes;
+				const QDomElement before = snapshotXml();
+				m_nodes = after;
+				const QDomElement afterXml = snapshotXml();
+				auto *undo = new PromoteShapeCommand(this, before, afterXml);
+				undo->setText(tr("Déformer une courbe"));
+				diagram()->undoStack().push(undo);
+			}
+		}
+		else
+		{
+			toggleHandleMode();
+		}
+		m_curveDragSegment = -1;
+		m_curveDragEngaged = false;
+		event->accept();
+		return;
+	}
+	QetGraphicsItem::mouseReleaseEvent(event);
 }
 
 /**
@@ -1803,27 +1903,99 @@ void QetShapeItem::dragPathControlHandle(bool isOutHandle, int nodeIndex, const 
 	prepareGeometryChange();
 	PathNode &node = m_nodes[nodeIndex];
 	const QPointF newOffset = localPos - node.anchor;
-	auto &dragged  = isOutHandle ? node.outHandle : node.inHandle;
-	auto &mirrored = isOutHandle ? node.inHandle  : node.outHandle;
+	auto &dragged = isOutHandle ? node.outHandle : node.inHandle;
 	dragged = newOffset;
 
 	if (mods & Qt::AltModifier)
-	{
 		node.kind = NodeKind::Corner;
-	}
-	else if (mirrored && node.kind != NodeKind::Corner)
-	{
-		const qreal len = qSqrt(newOffset.x() * newOffset.x() + newOffset.y() * newOffset.y());
-		if (len > 1e-6)
-		{
-			const QPointF direction(-newOffset.x() / len, -newOffset.y() / len);
-			const QPointF oldMirrored = *mirrored;
-			const qreal keptLength = (node.kind == NodeKind::Symmetric)
-					? len
-					: qSqrt(oldMirrored.x() * oldMirrored.x() + oldMirrored.y() * oldMirrored.y());
-			mirrored = direction * keptLength;
-		}
-	}
+	else
+		mirrorOppositeHandle(node, isOutHandle);
+
+	repositionHandles();
+}
+
+/**
+	@brief QetShapeItem::mirrorOppositeHandle
+	Given a node whose one handle (out, if justChangedIsOut; in,
+	otherwise) was just set directly, updates its *other* handle to
+	respect the node's kind -- Smooth keeps both collinear through the
+	anchor but lets each keep its own prior length (tangent-continuous,
+	magnitude-independent); Symmetric also equalizes the lengths; Corner
+	does nothing, since it has no linked handle to update. Shared by
+	dragPathControlHandle() (a handle dragged directly) and
+	dragCurveSegment() (both handles moved together, indirectly, by
+	dragging the curve between two nodes).
+*/
+void QetShapeItem::mirrorOppositeHandle(PathNode &node, bool justChangedIsOut)
+{
+	if (node.kind == NodeKind::Corner)
+		return;
+
+	auto &changed  = justChangedIsOut ? node.outHandle : node.inHandle;
+	auto &mirrored = justChangedIsOut ? node.inHandle  : node.outHandle;
+	if (!changed || !mirrored)
+		return;
+
+	const qreal len = qSqrt(changed->x() * changed->x() + changed->y() * changed->y());
+	if (len < 1e-6)
+		return;
+
+	const QPointF direction(-changed->x() / len, -changed->y() / len);
+	const qreal keptLength = (node.kind == NodeKind::Symmetric)
+			? len
+			: qSqrt(mirrored->x() * mirrored->x() + mirrored->y() * mirrored->y());
+	mirrored = direction * keptLength;
+}
+
+/**
+	@brief QetShapeItem::dragCurveSegment
+	Inkscape-style "grab the curve itself, not a handle" reshaping: moves
+	both of the segment's control points by the same amount, scaled so
+	the curve ends up passing through localPos at the parameter t where
+	the drag started. Verified algebraically and numerically before
+	shipping: for control points P1,P2 shifted by a constant delta, the
+	curve's own point at t shifts by exactly 3*(1-t)*t*delta, which is
+	exactly the factor divided back out below -- so the new curve passes
+	through localPos exactly, not approximately.
+	Always measured against the *original* control points captured when
+	the drag started (m_curveDragOriginalP1/P2), not the current
+	(possibly already-adjusted, this same drag) ones -- otherwise each
+	frame's adjustment would compound on top of the last, sending the
+	curve shooting off far past the cursor instead of tracking it.
+	Near either endpoint (t within 5% of 0 or 1) the curve is barely
+	sensitive to its control points at all -- the same reason grabbing a
+	suspension bridge's deck right next to a pylon barely moves it -- so
+	those clicks are left alone rather than requiring huge, unpredictable
+	handle movements for a small visual change; they're also close enough
+	to an anchor that the user most likely meant to grab that instead.
+*/
+void QetShapeItem::dragCurveSegment(int segmentIndex, qreal t, const QPointF &localPos)
+{
+	if (t < 0.05 || t > 0.95)
+		return;
+
+	const int count = m_nodes.size();
+	const int nextIndex = (segmentIndex + 1) % count;
+	PathNode &a = m_nodes[segmentIndex];
+	PathNode &b = m_nodes[nextIndex];
+
+	const QPointF p0 = a.anchor;
+	const QPointF p3 = b.anchor;
+	const qreal u = 1 - t;
+
+	const QPointF originalCurvePoint =
+			u*u*u*p0 + 3*u*u*t*m_curveDragOriginalP1 + 3*u*t*t*m_curveDragOriginalP2 + t*t*t*p3;
+	const QPointF desired = localPos - originalCurvePoint;
+	const qreal factor = 3 * u * t;   // > 0 given the t range guarded above
+	const QPointF handleDelta = desired / factor;
+
+	prepareGeometryChange();
+	a.outHandle = (m_curveDragOriginalP1 - p0) + handleDelta;
+	b.inHandle  = (m_curveDragOriginalP2 - p3) + handleDelta;
+
+	mirrorOppositeHandle(a, true);
+	mirrorOppositeHandle(b, false);
+
 	repositionHandles();
 }
 
