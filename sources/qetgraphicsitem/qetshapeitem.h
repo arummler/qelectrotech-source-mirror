@@ -235,6 +235,15 @@ class QetShapeItem : public QetGraphicsItem
 
 	private:
 		void toggleHandleMode();
+		HandleMode nextHandleMode() const;   // what a click would switch to from here -- shared by toggleHandleMode() and the tooltip
+		void updateModeHint();               // keeps the tooltip in sync with nextHandleMode()
+		void refreshInteractionHints();       // updateModeHint(), plus an immediate re-show of tooltip/status bar if currently hovered
+		void showStatusHint(const QString &text) const;
+		void clearStatusHint() const;
+		QString currentModeStatusHint() const;   // richer, one-line gesture/modifier reference for the status bar, shown when hovering the shape body
+		QString handleRoleTooltip(HandleRole role, int slot) const;   // shown natively by Qt when hovering that specific handle, and pushed to the status bar too
+		static QString handleModeLabel(HandleMode mode);
+		static bool isResizeCornerSlot(int slot);   // true for the 4 corner slots (of 8) in QetGraphicsHandlerUtility::pointsForRect's ordering
 		void rebuildHandles();       // (re)creates handler items -- only when the *set* of handles changes
 		void repositionHandles();    // moves existing handler items -- safe to call every frame of a live drag
 		void insertPoint();

@@ -1569,13 +1569,7 @@ void QETDiagramEditor::addItemGroupTriggered(QAction *action)
 	else if (value == "ellipse")
 		diagram_event = new DiagramEventAddShape (d, QetShapeItem::Ellipse);
 	else if (value == "polyline")
-	{
 		diagram_event = new DiagramEventAddShape (d, QetShapeItem::Polygon);
-		statusBar()-> showMessage(tr("Double-click pour terminer la forme, Click droit pour annuler le dernier point"));
-		connect(diagram_event, &DiagramEventInterface::destroyed, [this]() {
-		statusBar()->clearMessage();
-		});
-	}
 	else if (value == "path")
 	{
 		diagram_event = new DiagramEventAddPath (d);

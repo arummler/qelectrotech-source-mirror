@@ -19,7 +19,11 @@
 
 #include "../diagram.h"
 #include "../lastusedstyle.h"
+#include "../qetapp.h"
+#include "../qetdiagrameditor.h"
 #include "../undocommand/addgraphicsobjectcommand.h"
+
+#include <QStatusBar>
 
 /**
 	@brief DiagramEventAddShape::DiagramEventAddShape
@@ -36,6 +40,7 @@ DiagramEventAddShape::DiagramEventAddShape(Diagram *diagram, QetShapeItem::Shape
 {
 	m_running = true;
 	init();
+	updateCreationHint();
 }
 
 /**
@@ -51,8 +56,88 @@ DiagramEventAddShape::~DiagramEventAddShape()
 	delete m_help_horiz;
 	delete m_help_verti;
 
+	if (m_diagram && !m_diagram->views().isEmpty())
+	{
+		if (auto *editor = QETApp::diagramEditorAncestorOf(m_diagram->views().constFirst()))
+			editor->statusBar()->clearMessage();
+	}
+
 	foreach (QGraphicsView *v, m_diagram->views())
 		v->setContextMenuPolicy(Qt::DefaultContextMenu);
+}
+
+/**
+	@brief DiagramEventAddShape::applyPosition
+	Applies a drag/click position to the in-progress shape, honouring two
+	modifiers that mirror how the very same shape can already be edited
+	afterward, once placed:
+	  - Ctrl, for Rectangle/Ellipse only: the first click becomes the
+	    shape's *center* rather than a corner, growing symmetrically as
+	    the cursor moves away from it -- the same meaning Ctrl already
+	    has on a Resize handle (anchor at center). Deliberately not
+	    offered for Line: unlike the Rectangle/Ellipse case, there's no
+	    established convention for "a line grows symmetrically from its
+	    middle" to justify it by, so Ctrl for Line means only free
+	    positioning (see the plain grid-snap check above), nothing more.
+	  - Shift, for Rectangle/Ellipse only: forces the bounding box square
+	    (so Ellipse becomes a true circle), using whichever of the two
+	    dragged dimensions is currently larger and mirroring that onto
+	    the other, preserving the direction the user is actually
+	    dragging in.
+	Both can combine (Ctrl+Shift: a centered square/circle). Whether or
+	not Ctrl is currently held, the non-anchored branch always rebuilds
+	from m_anchor_point rather than nudging the existing rect/line --
+	otherwise, if Ctrl had been held earlier in the same drag (moving the
+	shape's own first point to a mirrored position), releasing it would
+	leave that point stuck there instead of actually restoring it.
+*/
+void DiagramEventAddShape::applyPosition(const QPointF &pos, Qt::KeyboardModifiers mods)
+{
+	if (!m_shape_item)
+		return;
+
+	const bool centerAnchored = (mods & Qt::ControlModifier)
+			&& (m_shape_type == QetShapeItem::Rectangle
+			 || m_shape_type == QetShapeItem::Ellipse);
+
+	QPointF target = pos;
+
+	if ((mods & Qt::ShiftModifier)
+			&& (m_shape_type == QetShapeItem::Rectangle || m_shape_type == QetShapeItem::Ellipse))
+	{
+		// m_anchor_point, not the shape's current rect(), on purpose:
+		// after a period of Ctrl being held earlier in the same drag,
+		// rect()'s corner could be the *displaced* one, not the true
+		// original anchor -- see the note below on why the non-anchored
+		// branch now always rebuilds from m_anchor_point for the same
+		// reason.
+		const QPointF ref = m_anchor_point;
+		const qreal dx = target.x() - ref.x();
+		const qreal dy = target.y() - ref.y();
+		const qreal size = qMax(qAbs(dx), qAbs(dy));
+		target.setX(ref.x() + (dx < 0 ? -size : size));
+		target.setY(ref.y() + (dy < 0 ? -size : size));
+	}
+
+	if (centerAnchored)
+	{
+		const QPointF mirrored = 2 * m_anchor_point - target;
+		m_shape_item->setRect(QRectF(mirrored, target));
+	}
+	else
+	{
+		// Rebuilt from m_anchor_point explicitly, not just setP2(target)
+		// -- if Ctrl was held earlier in this same drag, the shape's own
+		// first point was moved to a mirrored position; releasing Ctrl
+		// has to actually restore it, not just stop moving it further,
+		// or it gets stuck at wherever it last was for the rest of the
+		// drag (a real, confirmed bug: releasing Ctrl was a one-way
+		// street back to normal).
+		if (m_shape_type == QetShapeItem::Line)
+			m_shape_item->setLine(QLineF(m_anchor_point, target));
+		else
+			m_shape_item->setRect(QRectF(m_anchor_point, target));
+	}
 }
 
 /**
@@ -78,6 +163,7 @@ void DiagramEventAddShape::mousePressEvent(QGraphicsSceneMouseEvent *event)
 		if (!m_shape_item)
 		{
 			m_shape_item = new QetShapeItem(pos, pos, m_shape_type);
+			m_anchor_point = pos;
 				//Start from whatever pen/brush was last applied this
 				//session, rather than always the hardcoded default.
 			if (LastUsedStyle::hasShapePen()) {
@@ -87,6 +173,7 @@ void DiagramEventAddShape::mousePressEvent(QGraphicsSceneMouseEvent *event)
 				m_shape_item->setBrush(LastUsedStyle::shapeBrush());
 			}
 			m_diagram->addItem (m_shape_item);
+			updateCreationHint();
 			event->setAccepted(true);
 			return;
 		}
@@ -94,12 +181,13 @@ void DiagramEventAddShape::mousePressEvent(QGraphicsSceneMouseEvent *event)
 			//If current item isn't a polyline, add it with an undo command
 		if (m_shape_type != QetShapeItem::Polygon)
 		{
-			m_shape_item->setP2 (pos);
+			applyPosition(pos, event->modifiers());
 			if (m_shape_item->shapeType() == QetShapeItem::Rectangle || m_shape_item->shapeType() == QetShapeItem::Ellipse) {
 				m_shape_item->setRect(m_shape_item->rect().normalized());
 			}
 			m_diagram->undoStack().push (new AddGraphicsObjectCommand(m_shape_item, m_diagram));
 			m_shape_item = nullptr; //< set to nullptr for create new shape at next left clic
+			updateCreationHint();
 		}
 			//Else add a new point to polyline
 		else
@@ -132,7 +220,7 @@ void DiagramEventAddShape::mouseMoveEvent(QGraphicsSceneMouseEvent *event)
 			pos = Diagram::snapToGrid(pos);
 		}
 
-		m_shape_item->setP2 (pos);
+		applyPosition(pos, event->modifiers());
 		event->setAccepted(true);
 	}
 }
@@ -167,6 +255,7 @@ void DiagramEventAddShape::mouseReleaseEvent(QGraphicsSceneMouseEvent *event)
 			m_diagram->removeItem(m_shape_item);
 			delete m_shape_item;
 			m_shape_item = nullptr;
+			updateCreationHint();
 			event->setAccepted(true);
 			return;
 		}
@@ -203,6 +292,7 @@ void DiagramEventAddShape::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event
 		}
 		m_diagram->undoStack().push (new AddGraphicsObjectCommand(m_shape_item, m_diagram));
 		m_shape_item = nullptr; //< set to nullptr for create new shape at next left clic
+		updateCreationHint();
 		event->setAccepted(true);
 	}
 }
@@ -211,6 +301,59 @@ void DiagramEventAddShape::init()
 {
 	foreach (QGraphicsView *v, m_diagram->views())
 		v->setContextMenuPolicy(Qt::NoContextMenu);
+}
+
+/**
+	@brief DiagramEventAddShape::updateCreationHint
+	Shows whichever of beforeClickHint()/afterClickHint() matches the
+	current phase -- there was previously either no message at all
+	(Line/Rectangle/Ellipse) or a single static one that never changed
+	regardless of progress (Polygon, set externally in
+	QETDiagramEditor::addItemGroupTriggered()); this replaces both with
+	one phase-aware message per shape type, managed by the tool itself.
+*/
+void DiagramEventAddShape::updateCreationHint() const
+{
+	if (!m_diagram || m_diagram->views().isEmpty())
+		return;
+	if (auto *editor = QETApp::diagramEditorAncestorOf(m_diagram->views().constFirst()))
+		editor->statusBar()->showMessage(m_shape_item ? afterClickHint() : beforeClickHint());
+}
+
+QString DiagramEventAddShape::beforeClickHint() const
+{
+	switch (m_shape_type)
+	{
+		case QetShapeItem::Line:
+			return tr("Clic gauche : positionner le point de départ (Ctrl = position libre)");
+		case QetShapeItem::Rectangle:
+		case QetShapeItem::Ellipse:
+			return tr("Clic gauche : positionner le premier coin (Ctrl = point central, position libre)");
+		case QetShapeItem::Polygon:
+			return tr("Clic gauche : positionner le premier point (Ctrl = position libre)");
+		default:
+			return QString();
+	}
+}
+
+QString DiagramEventAddShape::afterClickHint() const
+{
+	switch (m_shape_type)
+	{
+		case QetShapeItem::Line:
+			return tr("Clic gauche : positionner le point final (Ctrl = position libre) ; clic droit : annuler");
+		case QetShapeItem::Rectangle:
+			return tr("Clic gauche : positionner le coin opposé (Maj = carré, "
+					"Ctrl = depuis le centre + position libre, Ctrl+Maj = carré centré) ; clic droit : annuler");
+		case QetShapeItem::Ellipse:
+			return tr("Clic gauche : positionner le coin opposé (Maj = cercle, "
+					"Ctrl = depuis le centre + position libre, Ctrl+Maj = cercle centré) ; clic droit : annuler");
+		case QetShapeItem::Polygon:
+			return tr("Clic gauche : point suivant ; double-clic ou Entrée : terminer ; "
+					"clic droit : annuler le dernier point");
+		default:
+			return QString();
+	}
 }
 
 /**

@@ -25,13 +25,19 @@
 #include "../diagramview.h"
 #include "../qet.h"
 #include "../qeticons.h"
+#include "../qetapp.h"
+#include "../qetdiagrameditor.h"
 #include "../qetxml.h"
 #include "../ui/shapegraphicsitempropertieswidget.h"
 #include "../utils/qetutils.h"
 #include "../undocommand/promoteshapecommand.h"
 
 #include <QActionGroup>
+#include <QCursor>
 #include <QMenu>
+#include <QStatusBar>
+#include <QTimer>
+#include <QToolTip>
 #include <QtCore/qmath.h>
 #include <utility>
 
@@ -678,6 +684,7 @@ void QetShapeItem::paint(
 void QetShapeItem::hoverEnterEvent(QGraphicsSceneHoverEvent *event)
 {
 	m_hovered = true;
+	refreshInteractionHints();
 	QetGraphicsItem::hoverEnterEvent(event);
 }
 
@@ -689,6 +696,7 @@ void QetShapeItem::hoverEnterEvent(QGraphicsSceneHoverEvent *event)
 void QetShapeItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *event)
 {
 	m_hovered = false;
+	clearStatusHint();
 	QetGraphicsItem::hoverLeaveEvent(event);
 }
 
@@ -846,6 +854,7 @@ QVariant QetShapeItem::itemChange(QGraphicsItem::GraphicsItemChange change,
 			prepareGeometryChange();
 			m_handleMode = HandleMode::Size;
 		}
+		refreshInteractionHints();
 	}
 	else if (change == ItemPositionHasChanged || change == ItemTransformHasChanged) {
 		if (!m_deferHandleReposition)
@@ -894,6 +903,25 @@ bool QetShapeItem::sceneEventFilter(QGraphicsItem *watched, QEvent *event)
 				{
 					handlerMouseReleaseEvent(m_vector_index);
 					return true;
+				}
+				else if (event->type() == QEvent::GraphicsSceneHoverEnter)
+				{
+					// Handle-specific status bar text, on top of the
+					// tooltip Qt shows natively from the handle's own
+					// setToolTip() (see rebuildHandles()) -- returning
+					// false leaves that native tooltip handling alone.
+					showStatusHint(handleRoleTooltip(m_handleRoles.value(m_vector_index), m_handleSlot.value(m_vector_index)));
+					return false;
+				}
+				else if (event->type() == QEvent::GraphicsSceneHoverLeave)
+				{
+					// Falls back to the shape's own general hint (if the
+					// cursor is still over the shape's body overall)
+					// rather than clearing outright -- leaving one
+					// handle's small hit area shouldn't blank the status
+					// bar if you're still hovering the shape itself.
+					refreshInteractionHints();
+					return false;
 				}
 			}
 		}
@@ -1035,6 +1063,30 @@ void QetShapeItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event)
 	concept); Size -> RotateSkew -> Size for everything else, skipping the
 	Corner state entirely rather than showing an empty/meaningless one.
 */
+/**
+	@brief QetShapeItem::nextHandleMode
+	What clicking an already-selected shape switches to from the current
+	mode -- the single source of truth for the cycle order, shared by
+	toggleHandleMode() (which acts on it) and updateModeHint() (which
+	just describes it).
+*/
+QetShapeItem::HandleMode QetShapeItem::nextHandleMode() const
+{
+	if (m_shapeType == Rectangle)
+	{
+		if (m_handleMode == HandleMode::Size) return HandleMode::Corner;
+		if (m_handleMode == HandleMode::Corner) return HandleMode::RotateSkew;
+		return HandleMode::Size;
+	}
+	if (m_shapeType == Path)
+	{
+		if (m_handleMode == HandleMode::Size) return HandleMode::NodeEdit;
+		if (m_handleMode == HandleMode::NodeEdit) return HandleMode::RotateSkew;
+		return HandleMode::Size;
+	}
+	return (m_handleMode == HandleMode::Size) ? HandleMode::RotateSkew : HandleMode::Size;
+}
+
 void QetShapeItem::toggleHandleMode()
 {
 	// Changing m_handleMode changes what boundingRect() covers (it only
@@ -1043,26 +1095,226 @@ void QetShapeItem::toggleHandleMode()
 	// a rendering ghost behind, the same class of bug already fixed
 	// elsewhere for other state changes that affect boundingRect().
 	prepareGeometryChange();
-
-	if (m_shapeType == Rectangle)
-	{
-		if (m_handleMode == HandleMode::Size) m_handleMode = HandleMode::Corner;
-		else if (m_handleMode == HandleMode::Corner) m_handleMode = HandleMode::RotateSkew;
-		else m_handleMode = HandleMode::Size;
-	}
-	else if (m_shapeType == Path)
-	{
-		if (m_handleMode == HandleMode::Size) m_handleMode = HandleMode::NodeEdit;
-		else if (m_handleMode == HandleMode::NodeEdit) m_handleMode = HandleMode::RotateSkew;
-		else m_handleMode = HandleMode::Size;
-	}
-	else
-	{
-		m_handleMode = (m_handleMode == HandleMode::Size) ? HandleMode::RotateSkew : HandleMode::Size;
-	}
-
+	m_handleMode = nextHandleMode();
 	rebuildHandles();
+	refreshInteractionHints();
 }
+
+/**
+	@brief QetShapeItem::handleModeLabel
+	Short, human name for a HandleMode -- used to build both the tooltip
+	("click: switches to X") and, indirectly, the status bar text.
+*/
+QString QetShapeItem::handleModeLabel(HandleMode mode)
+{
+	switch (mode)
+	{
+		case HandleMode::Size:       return tr("Taille");
+		case HandleMode::Corner:     return tr("Coins arrondis");
+		case HandleMode::NodeEdit:   return tr("Édition des nœuds");
+		case HandleMode::RotateSkew: return tr("Rotation/Inclinaison");
+	}
+	return QString();
+}
+
+/**
+	@brief QetShapeItem::updateModeHint
+	Keeps the tooltip in sync with what the next click would do -- called
+	on selection change (so it appears/disappears with the handles
+	themselves) and after every mode switch. Deliberately short: this is
+	a tooltip, not documentation -- the fuller gesture/modifier reference
+	lives in the status bar instead (see currentModeStatusHint(),
+	hoverEnterEvent()), which has room for it without popping up
+	uninvited.
+*/
+void QetShapeItem::updateModeHint()
+{
+	setToolTip(isSelected()
+			? tr("Cliquer : mode %1").arg(handleModeLabel(nextHandleMode()))
+			: QString());
+}
+
+/**
+	@brief QetShapeItem::refreshInteractionHints
+	Keeps the tooltip text current, and -- if the shape is already being
+	hovered -- immediately re-shows both the tooltip and the status bar
+	hint rather than leaving them stuck on whatever was true before.
+	Needed because Qt only re-evaluates a tooltip, and this class only
+	re-shows the status bar, when the cursor *moves*: selecting a shape
+	(often clicked while the mouse was already sitting on it) or cycling
+	handle modes (definitely clicked while sitting on it) both change
+	what should be shown without the cursor moving at all, so without
+	this both would appear stale until the user moved away and back.
+*/
+void QetShapeItem::refreshInteractionHints()
+{
+	updateModeHint();
+
+	if (!m_hovered || !isSelected())
+		return;
+
+	const QString status = currentModeStatusHint();
+	const QString tip = toolTip();
+
+	// Deferred to the next event-loop iteration rather than shown
+	// immediately: this is called from within the same mousePressEvent
+	// that changed the mode, and Qt hides any visible tooltip as part of
+	// its own click handling -- racing an immediate re-show against that
+	// is exactly what made the tooltip appear inconsistently. Letting
+	// Qt's own click handling finish first, then re-showing, is the
+	// standard fix for this class of "act after the current event has
+	// settled" timing problem. Re-checks hover/selection on firing since
+	// they're cheap and the world could in principle have changed in the
+	// meantime, however unlikely at a zero-millisecond delay.
+	QTimer::singleShot(0, this, [this, status, tip]()
+	{
+		if (!m_hovered || !isSelected())
+			return;
+		showStatusHint(status);
+		if (!tip.isEmpty())
+			QToolTip::showText(QCursor::pos(), tip);
+	});
+}
+
+void QetShapeItem::showStatusHint(const QString &text) const
+{
+	if (text.isEmpty() || !diagram() || diagram()->views().isEmpty())
+		return;
+	if (auto *editor = QETApp::diagramEditorAncestorOf(diagram()->views().constFirst()))
+		editor->statusBar()->showMessage(text);
+}
+
+void QetShapeItem::clearStatusHint() const
+{
+	if (!diagram() || diagram()->views().isEmpty())
+		return;
+	if (auto *editor = QETApp::diagramEditorAncestorOf(diagram()->views().constFirst()))
+		editor->statusBar()->clearMessage();
+}
+
+/**
+	@brief QetShapeItem::currentModeStatusHint
+	One-line reference for whatever handles are visible right now,
+	shown in the status bar while hovering a selected shape's body (see
+	hoverEnterEvent()) -- the modifier keys in particular (Ctrl, Shift,
+	Alt) have no other visible indication that they do anything at all.
+	Also carries the same "next mode" information as the tooltip, since
+	the status bar has room for the full picture in one place rather
+	than needing the tooltip read separately.
+*/
+QString QetShapeItem::currentModeStatusHint() const
+{
+	QString hint;
+	switch (m_handleMode)
+	{
+		case HandleMode::Size:
+			if (m_shapeType == Rectangle || m_shapeType == Ellipse)
+			{
+				hint = tr("Glisser un coin/bord : redimensionner "
+						"(Ctrl = depuis le centre, Maj = proportions, Alt = détacher en polyligne)");
+				if (m_shapeType == Ellipse)
+					hint += tr(" ; point turquoise : arc");
+			}
+			else if (m_shapeType == Line)
+			{
+				hint = tr("Glisser une extrémité : la déplacer");
+			}
+			else
+			{
+				hint = tr("Glisser un point : le déplacer");
+			}
+			break;
+
+		case HandleMode::Corner:
+			hint = tr("Glisser le point violet : arrondir les coins");
+			break;
+
+		case HandleMode::NodeEdit:
+			hint = tr("Glisser une poignée ou la courbe : déformer (Alt = briser la tangente) ; "
+					"clic droit : menu du nœud le plus proche");
+			break;
+
+		case HandleMode::RotateSkew:
+		{
+			// Only Rectangle/Ellipse actually have SkewEdge handles in
+			// this mode (see rebuildHandles()) -- Line/Polygon/Path
+			// don't, so mentioning "un bord : inclinaison" for them
+			// would describe a handle that doesn't exist.
+			const QString handleWord = (m_shapeType == Line) ? tr("une extrémité")
+					: (m_shapeType == Rectangle || m_shapeType == Ellipse) ? tr("un coin")
+					: tr("un point");
+			hint = tr("Glisser %1 : rotation (Maj = 15°)").arg(handleWord);
+			if (m_shapeType == Rectangle || m_shapeType == Ellipse)
+				hint += tr(" ; un bord : inclinaison");
+			hint += tr(" ; point rouge : glisser pour repositionner le centre de rotation");
+			break;
+		}
+	}
+
+	// Mentioned once here rather than repeated in every branch above:
+	// Ctrl means "free positioning, no grid snap" uniformly for every
+	// handle and for dragging the curve itself (see
+	// handlerMouseMoveEvent() and mouseMoveEvent()'s curve-drag branch),
+	// so it isn't really a property of any one mode.
+	if (!hint.isEmpty())
+	{
+		hint += tr(" (Ctrl pendant le glissement = position libre, sans accrochage à la grille)");
+		hint += tr(" — Cliquer : mode %1").arg(handleModeLabel(nextHandleMode()));
+	}
+
+	return hint;
+}
+
+/**
+	@brief QetShapeItem::handleRoleTooltip
+	Set natively on each handle item in rebuildHandles() -- Qt shows a
+	handle's own tooltip in preference to the shape's when hovering
+	directly over it, so this is what gives each handle its own distinct
+	hint instead of every one of them repeating the shape's general
+	"click: next mode" tooltip regardless of which handle you're actually
+	looking at.
+*/
+QString QetShapeItem::handleRoleTooltip(HandleRole role, int slot) const
+{
+	// Ctrl always means "free positioning, no grid snap" here -- checked
+	// once, uniformly, before any role-specific dispatch even runs (see
+	// handlerMouseMoveEvent()) -- so it belongs on every one of these,
+	// not just the handles where it also happens to do something extra
+	// (Resize's center-anchor).
+	switch (role)
+	{
+		case HandleRole::Resize:
+		{
+			// Line's endpoints use this same role but ignore mods
+			// entirely (see dragResize()'s early-return for Line) --
+			// no modifier applies to them at all.
+			if (m_shapeType == Line)
+				return tr("Glisser : déplacer ce point");
+			QString text = tr("Glisser : redimensionner (Ctrl = depuis le centre + position libre, Maj = proportions");
+			if (isResizeCornerSlot(slot))
+				text += tr(", Alt = détacher en polyligne");
+			text += ")";
+			return text;
+		}
+		case HandleRole::Rotate:
+			return tr("Glisser : rotation (Ctrl = position libre, Maj = 15°)");
+		case HandleRole::SkewEdge:
+			return tr("Glisser : inclinaison (Ctrl = position libre, Maj = 15°)");
+		case HandleRole::Pivot:
+			return tr("Glisser : repositionner le centre de rotation (Ctrl = position libre)");
+		case HandleRole::CornerRadius:
+			return tr("Glisser : arrondir les coins (Ctrl = position libre)");
+		case HandleRole::ArcEndpoint:
+			return tr("Glisser : ajuster l'arc (Ctrl = position libre, Maj = 15°)");
+		case HandleRole::PathAnchor:
+			return tr("Glisser : déplacer le point (Ctrl = position libre)");
+		case HandleRole::PathControlIn:
+		case HandleRole::PathControlOut:
+			return tr("Glisser : déformer la courbe (Ctrl = position libre, Alt = briser la tangente)");
+	}
+	return QString();
+}
+
 
 /**
 	@brief QetShapeItem::colorForHandleRole
@@ -1323,6 +1575,8 @@ void QetShapeItem::rebuildHandles()
 		QetGraphicsHandlerItem *h = m_handler_vector.at(i);
 		h->setZValue(zValue() + 1);
 		h->setColor(colorForHandleRole(m_handleRoles.at(i)));
+		h->setToolTip(handleRoleTooltip(m_handleRoles.at(i), m_handleSlot.at(i)));
+		h->setAcceptHoverEvents(true);
 		scene()->addItem(h);
 		h->installSceneEventFilter(this);
 	}
@@ -1738,6 +1992,15 @@ QRectF QetShapeItem::lockAspectRatio(const QRectF &oldRect, QRectF newRect, int 
 	return QRectF(x, y, w, h);
 }
 
+bool QetShapeItem::isResizeCornerSlot(int slot)
+{
+	// The 4 corner indices among pointsForRect's 8-point (corner+edge)
+	// ordering -- shared by dragResize() (decides whether Alt detaches
+	// this vertex) and handleRoleTooltip() (decides whether to mention
+	// that in the tooltip), so the two can't drift apart.
+	return slot == 0 || slot == 2 || slot == 5 || slot == 7;
+}
+
 void QetShapeItem::dragResize(int index, const QPointF &localPos, Qt::KeyboardModifiers mods)
 {
 	if (m_shapeType == Line)
@@ -1751,8 +2014,7 @@ void QetShapeItem::dragResize(int index, const QPointF &localPos, Qt::KeyboardMo
 	// Alt on a corner detaches that single vertex instead of resizing --
 	// only corners (0,2,5,7 in pointsForRect's own ordering) carry that
 	// meaning; dragging an edge midpoint with Alt has no special effect.
-	static const QVector<int> cornerSlots = {0, 2, 5, 7};
-	if ((mods & Qt::AltModifier) && cornerSlots.contains(index))
+	if ((mods & Qt::AltModifier) && isResizeCornerSlot(index))
 	{
 		promoteRectangleOrEllipseToPolygon(index, localPos);
 		return;

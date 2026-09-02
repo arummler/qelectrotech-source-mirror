@@ -41,11 +41,16 @@ class DiagramEventAddShape : public DiagramEventInterface
 
 	private:
 		void updateHelpCross (const QPointF &p);
+		void applyPosition (const QPointF &pos, Qt::KeyboardModifiers mods);
+		void updateCreationHint () const;
+		QString beforeClickHint () const;
+		QString afterClickHint () const;
 
 	protected:
 		QetShapeItem::ShapeType  m_shape_type;
 		QetShapeItem            *m_shape_item;
 		QGraphicsLineItem       *m_help_horiz, *m_help_verti;
+		QPointF                  m_anchor_point;   // the shape's first-click point -- meaningful once m_shape_item exists
 };
 
 #endif // DIAGRAMEVENTADDSHAPE_H

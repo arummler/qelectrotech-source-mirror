@@ -495,14 +495,17 @@ void ShapeGraphicsItemPropertiesWidget::setUpEditConnection()
 		m_edit_connection << connect (ui->m_close_polygon, &QCheckBox::clicked,
 									  this, &ShapeGraphicsItemPropertiesWidget::apply);
 
-		m_edit_connection << connect (m_shape, &QetShapeItem::penChanged,
-									  this, &ShapeGraphicsItemPropertiesWidget::updateUi);
+		if (m_shape)
+		{
+			m_edit_connection << connect (m_shape, &QetShapeItem::penChanged,
+										  this, &ShapeGraphicsItemPropertiesWidget::updateUi);
 
-		m_edit_connection << connect (m_shape, &QetShapeItem::closeChanged,
-									  this, &ShapeGraphicsItemPropertiesWidget::updateUi);
+			m_edit_connection << connect (m_shape, &QetShapeItem::closeChanged,
+										  this, &ShapeGraphicsItemPropertiesWidget::updateUi);
 
-		m_edit_connection << connect (m_shape, &QetShapeItem::brushChanged,
-									  this, &ShapeGraphicsItemPropertiesWidget::updateUi);
+			m_edit_connection << connect (m_shape, &QetShapeItem::brushChanged,
+										  this, &ShapeGraphicsItemPropertiesWidget::updateUi);
+		}
 
 	}
 }
