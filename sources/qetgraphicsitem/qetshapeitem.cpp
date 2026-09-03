@@ -642,6 +642,57 @@ void QetShapeItem::paint(
 
 	painter->drawPath(outline());
 
+	// Segment midpoint markers: a small, distinct diamond at the middle
+	// of every segment -- straight or already curved -- shown only in
+	// NodeEdit mode. Purely a discoverability aid: a straight run
+	// between two Corner nodes otherwise gives no visual hint at all
+	// that it's draggable (see mousePressEvent()'s curve-drag
+	// detection), which is exactly what made that interaction easy to
+	// miss. Deliberately *not* a real handle -- the actual drag already
+	// works from anywhere along the segment via nearestPathSegment(),
+	// not just this exact point, and turning the marker into its own
+	// discrete hit target would only narrow that back down. Diamond
+	// shape and a muted colour distinguish it at a glance from the
+	// round, brighter anchor/control dots, which are real handles.
+	// Drawn before the guide lines/handles on purpose, so those stay
+	// visually on top of this rather than the reverse.
+	if (m_shapeType == Path && m_handleMode == HandleMode::NodeEdit)
+	{
+		const int count = m_nodes.size();
+		const int segments = m_closed ? count : count - 1;
+		if (segments > 0)
+		{
+			painter->save();
+			QPen markerPen(QColor(180, 120, 40));
+			markerPen.setWidthF(1.2);
+			markerPen.setCosmetic(true);
+			painter->setPen(markerPen);
+			painter->setBrush(QColor(255, 210, 130, 200));
+
+			for (int i = 0; i < segments; ++i)
+			{
+				const PathNode &a = m_nodes.at(i);
+				const PathNode &b = m_nodes.at((i + 1) % count);
+				const QPointF p0 = a.anchor;
+				const QPointF p1 = a.anchor + a.outHandle.value_or(QPointF());
+				const QPointF p2 = b.anchor + b.inHandle.value_or(QPointF());
+				const QPointF p3 = b.anchor;
+
+				const qreal t = 0.5, u = 0.5;
+				const QPointF mid = u*u*u*p0 + 3*u*u*t*p1 + 3*u*t*t*p2 + t*t*t*p3;
+
+				const qreal r = 3.5;   // half-diagonal, in local units
+				QPolygonF diamond;
+				diamond << QPointF(mid.x(), mid.y() - r)
+				        << QPointF(mid.x() + r, mid.y())
+				        << QPointF(mid.x(), mid.y() + r)
+				        << QPointF(mid.x() - r, mid.y());
+				painter->drawPolygon(diamond);
+			}
+			painter->restore();
+		}
+	}
+
 	// Tangent guide lines: connects each visible control handle back to
 	// its anchor, for every node that has any -- deliberately not
 	// filtered down to "just one node" (see the header's HandleMode
@@ -773,7 +824,7 @@ void QetShapeItem::mouseMoveEvent(QGraphicsSceneMouseEvent *event)
 		}
 
 		QPointF scenePos = event->scenePos();
-		if (event->modifiers() != Qt::ControlModifier)
+		if (!(event->modifiers() & Qt::ControlModifier))
 			scenePos = Diagram::snapToGrid(scenePos);
 		dragCurveSegment(m_curveDragSegment, m_curveDragT, mapFromScene(scenePos));
 		event->accept();
@@ -1231,6 +1282,7 @@ QString QetShapeItem::currentModeStatusHint() const
 
 		case HandleMode::NodeEdit:
 			hint = tr("Glisser une poignée ou la courbe : déformer (Alt = briser la tangente) ; "
+					"Alt+glisser un point anguleux : créer des poignées ; "
 					"clic droit : menu du nœud le plus proche");
 			break;
 
@@ -1307,7 +1359,13 @@ QString QetShapeItem::handleRoleTooltip(HandleRole role, int slot) const
 		case HandleRole::ArcEndpoint:
 			return tr("Glisser : ajuster l'arc (Ctrl = position libre, Maj = 15°)");
 		case HandleRole::PathAnchor:
-			return tr("Glisser : déplacer le point (Ctrl = position libre)");
+		{
+			QString text = tr("Glisser : déplacer le point (Ctrl = position libre");
+			if (m_shapeType == Path)
+				text += tr(", Alt = créer des poignées");
+			text += ")";
+			return text;
+		}
 		case HandleRole::PathControlIn:
 		case HandleRole::PathControlOut:
 			return tr("Glisser : déformer la courbe (Ctrl = position libre, Alt = briser la tangente)");
@@ -2136,13 +2194,45 @@ void QetShapeItem::dragCornerRadius(int which, const QPointF &localPos)
 	else setYRadius(radius);
 }
 
-void QetShapeItem::dragPathAnchor(int which, const QPointF &localPos)
+/**
+	@brief QetShapeItem::dragPathAnchor
+	Normally just moves the anchor (Polygon vertex, or a Path node's
+	anchor -- its in/out handles are relative offsets, so they follow
+	for free). Alt+drag on a Path anchor, in NodeEdit mode, does
+	something different instead: pulls a fresh pair of symmetric handles
+	directly out of that node, letting a bare Corner node be reshaped
+	into a curve without needing the context menu's "make smooth"
+	action first -- the anchor itself stays fixed; the drag distance and
+	direction become the outgoing handle, mirrored exactly for the
+	incoming one, matching Illustrator's own "Alt+drag an anchor"
+	convention for this exact gesture. Deliberately scoped to NodeEdit
+	mode: the curve *would* still bend if allowed in Size mode too (the
+	underlying node data doesn't care what mode is active), but the new
+	handles themselves would be invisible until switching modes anyway,
+	which would just be confusing.
+*/
+void QetShapeItem::dragPathAnchor(int which, const QPointF &localPos, Qt::KeyboardModifiers mods)
 {
 	prepareGeometryChange();
 	if (m_shapeType == Polygon)
+	{
 		m_polygon.replace(which, localPos);
+	}
 	else if (which < m_nodes.size())
-		m_nodes[which].anchor = localPos;   // in/out handles are relative offsets: they follow for free
+	{
+		PathNode &node = m_nodes[which];
+		if ((mods & Qt::AltModifier) && m_handleMode == HandleMode::NodeEdit)
+		{
+			const QPointF offset = localPos - node.anchor;
+			node.outHandle = offset;
+			node.inHandle  = -offset;
+			node.kind = NodeKind::Symmetric;
+		}
+		else
+		{
+			node.anchor = localPos;   // in/out handles are relative offsets: they follow for free
+		}
+	}
 	repositionHandles();
 }
 
@@ -2184,10 +2274,15 @@ void QetShapeItem::dragPathControlHandle(bool isOutHandle, int nodeIndex, const 
 	respect the node's kind -- Smooth keeps both collinear through the
 	anchor but lets each keep its own prior length (tangent-continuous,
 	magnitude-independent); Symmetric also equalizes the lengths; Corner
-	does nothing, since it has no linked handle to update. Shared by
-	dragPathControlHandle() (a handle dragged directly) and
-	dragCurveSegment() (both handles moved together, indirectly, by
-	dragging the curve between two nodes).
+	does nothing, since it has no linked handle to update. If the other
+	handle doesn't exist yet at all, it's created here rather than left
+	missing -- matching its own length to whichever handle was just
+	dragged, the only sensible default when there's no prior length of
+	its own to preserve. Shared by dragPathControlHandle() (a handle
+	dragged directly), dragCurveSegment() (both handles moved together,
+	indirectly, by dragging the curve between two nodes), and
+	dragPathAnchor()'s Alt-drag (pulling a fresh pair of handles out of
+	a bare Corner node).
 */
 void QetShapeItem::mirrorOppositeHandle(PathNode &node, bool justChangedIsOut)
 {
@@ -2196,7 +2291,7 @@ void QetShapeItem::mirrorOppositeHandle(PathNode &node, bool justChangedIsOut)
 
 	auto &changed  = justChangedIsOut ? node.outHandle : node.inHandle;
 	auto &mirrored = justChangedIsOut ? node.inHandle  : node.outHandle;
-	if (!changed || !mirrored)
+	if (!changed)
 		return;
 
 	const qreal len = qSqrt(changed->x() * changed->x() + changed->y() * changed->y());
@@ -2204,7 +2299,7 @@ void QetShapeItem::mirrorOppositeHandle(PathNode &node, bool justChangedIsOut)
 		return;
 
 	const QPointF direction(-changed->x() / len, -changed->y() / len);
-	const qreal keptLength = (node.kind == NodeKind::Symmetric)
+	const qreal keptLength = (node.kind == NodeKind::Symmetric || !mirrored)
 			? len
 			: qSqrt(mirrored->x() * mirrored->x() + mirrored->y() * mirrored->y());
 	mirrored = direction * keptLength;
@@ -2290,7 +2385,12 @@ void QetShapeItem::handlerMousePressEvent(int handlerIndex)
 void QetShapeItem::handlerMouseMoveEvent(int handlerIndex, QGraphicsSceneMouseEvent *event)
 {
 	QPointF scenePos = event->scenePos();
-	if (event->modifiers() != Qt::ControlModifier)
+	// Bitwise flag check, not exact equality -- see
+	// DiagramEventAddShape::mousePressEvent's identical fix and comment:
+	// modifiers() == Ctrl alone fails the moment any other key (Alt, for
+	// dragPathAnchor()'s handle-creation gesture) is also held,
+	// silently falling through to snapToGrid() even though Ctrl is held.
+	if (!(event->modifiers() & Qt::ControlModifier))
 		scenePos = Diagram::snapToGrid(scenePos);
 
 	const HandleRole role = m_handleRoles.value(handlerIndex, HandleRole::Resize);
@@ -2311,7 +2411,7 @@ void QetShapeItem::handlerMouseMoveEvent(int handlerIndex, QGraphicsSceneMouseEv
 		case HandleRole::Pivot:         dragPivotHandle(new_pos); break;
 		case HandleRole::CornerRadius:  dragCornerRadius(slot, new_pos); break;
 		case HandleRole::ArcEndpoint:   dragArcEndpoint(slot, new_pos, mods); break;
-		case HandleRole::PathAnchor:    dragPathAnchor(slot, new_pos); break;
+		case HandleRole::PathAnchor:    dragPathAnchor(slot, new_pos, mods); break;
 		case HandleRole::PathControlIn:  dragPathControlHandle(false, slot, new_pos, mods); break;
 		case HandleRole::PathControlOut: dragPathControlHandle(true,  slot, new_pos, mods); break;
 		case HandleRole::Rotate:

@@ -266,7 +266,7 @@ class QetShapeItem : public QetGraphicsItem
 		void dragPivotHandle (const QPointF &localPos);
 		void dragArcEndpoint (int which,       const QPointF &localPos, Qt::KeyboardModifiers mods);
 		void dragCornerRadius(int which,       const QPointF &localPos);
-		void dragPathAnchor  (int which,       const QPointF &localPos);
+		void dragPathAnchor  (int which,       const QPointF &localPos, Qt::KeyboardModifiers mods);
 		void dragPathControlHandle(bool isOutHandle, int nodeIndex, const QPointF &localPos, Qt::KeyboardModifiers mods);
 		void mirrorOppositeHandle(PathNode &node, bool justChangedIsOut);   // shared by dragPathControlHandle() and dragCurveSegment()
 		void dragCurveSegment(int segmentIndex, qreal t, const QPointF &localPos);   // Inkscape-style "grab the curve itself"

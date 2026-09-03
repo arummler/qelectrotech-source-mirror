@@ -60,6 +60,7 @@ class DiagramEventAddPath : public DiagramEventInterface
 
 	private:
 		void updateHelpCross (const QPointF &p);
+		void showHint () const;
 		void finishPath (bool closed);
 		void cancelPath ();
 		bool nearFirstNode (const QPointF &scenePos) const;

@@ -23,7 +23,11 @@
 #include "../qetdiagrameditor.h"
 #include "../undocommand/addgraphicsobjectcommand.h"
 
+#include <QGraphicsEllipseItem>
+#include <QGuiApplication>
+#include <QKeyEvent>
 #include <QStatusBar>
+#include <QTimer>
 
 /**
 	@brief DiagramEventAddShape::DiagramEventAddShape
@@ -40,7 +44,18 @@ DiagramEventAddShape::DiagramEventAddShape(Diagram *diagram, QetShapeItem::Shape
 {
 	m_running = true;
 	init();
-	updateCreationHint();
+	// Deferred to the next event-loop iteration, not shown immediately:
+	// Diagram::setEventInterface() destroys whatever tool was
+	// previously active *after* this constructor returns, and that
+	// previous tool's own destructor clears the status bar (see
+	// ~DiagramEventAddShape() below) -- an immediate show here would
+	// just get wiped out moments later by that cleanup. Letting the old
+	// tool's teardown finish first, then showing this one's message, is
+	// the same fix already used for the tooltip-flicker issue in
+	// QetShapeItem::refreshInteractionHints(), applied to the same
+	// class of "something later in the same call chain undoes what I
+	// just did" ordering problem.
+	QTimer::singleShot(0, this, [this]() { updateCreationHint(); });
 }
 
 /**
@@ -55,6 +70,7 @@ DiagramEventAddShape::~DiagramEventAddShape()
 	}
 	delete m_help_horiz;
 	delete m_help_verti;
+	delete m_center_marker;
 
 	if (m_diagram && !m_diagram->views().isEmpty())
 	{
@@ -96,21 +112,32 @@ void DiagramEventAddShape::applyPosition(const QPointF &pos, Qt::KeyboardModifie
 	if (!m_shape_item)
 		return;
 
-	const bool centerAnchored = (mods & Qt::ControlModifier)
-			&& (m_shape_type == QetShapeItem::Rectangle
-			 || m_shape_type == QetShapeItem::Ellipse);
+	if (m_shape_type == QetShapeItem::Polygon)
+	{
+		// setP2() has its own dedicated Polygon handling: it moves the
+		// *last* vertex in place rather than setting a second point,
+		// which is exactly the live "next segment follows the mouse"
+		// preview -- the same idea DiagramEventAddPath's trailing
+		// preview node gives the pen tool. No Ctrl/Shift modifiers apply
+		// here (those are Rectangle/Ellipse/Line-specific below), so
+		// this is a direct, unconditional call.
+		m_shape_item->setP2(pos);
+		return;
+	}
 
+	// m_center_anchored is decided once, in mousePressEvent, not
+	// re-checked here on every call -- re-checking it live meant
+	// releasing Ctrl mid-drag (something you'd naturally do the moment
+	// your hand gets tired holding it, long before you're done resizing)
+	// silently snapped the shape back to corner-anchored, discarding
+	// what felt like an already-made decision. Deciding it once at the
+	// first click matches "I held Ctrl when I clicked, so this shape is
+	// centered" -- a single, predictable rule instead of a live toggle.
 	QPointF target = pos;
 
 	if ((mods & Qt::ShiftModifier)
 			&& (m_shape_type == QetShapeItem::Rectangle || m_shape_type == QetShapeItem::Ellipse))
 	{
-		// m_anchor_point, not the shape's current rect(), on purpose:
-		// after a period of Ctrl being held earlier in the same drag,
-		// rect()'s corner could be the *displaced* one, not the true
-		// original anchor -- see the note below on why the non-anchored
-		// branch now always rebuilds from m_anchor_point for the same
-		// reason.
 		const QPointF ref = m_anchor_point;
 		const qreal dx = target.x() - ref.x();
 		const qreal dy = target.y() - ref.y();
@@ -119,25 +146,45 @@ void DiagramEventAddShape::applyPosition(const QPointF &pos, Qt::KeyboardModifie
 		target.setY(ref.y() + (dy < 0 ? -size : size));
 	}
 
-	if (centerAnchored)
+	if (m_center_anchored)
 	{
 		const QPointF mirrored = 2 * m_anchor_point - target;
 		m_shape_item->setRect(QRectF(mirrored, target));
 	}
 	else
 	{
-		// Rebuilt from m_anchor_point explicitly, not just setP2(target)
-		// -- if Ctrl was held earlier in this same drag, the shape's own
-		// first point was moved to a mirrored position; releasing Ctrl
-		// has to actually restore it, not just stop moving it further,
-		// or it gets stuck at wherever it last was for the rest of the
-		// drag (a real, confirmed bug: releasing Ctrl was a one-way
-		// street back to normal).
 		if (m_shape_type == QetShapeItem::Line)
 			m_shape_item->setLine(QLineF(m_anchor_point, target));
 		else
 			m_shape_item->setRect(QRectF(m_anchor_point, target));
 	}
+}
+
+/**
+	@brief DiagramEventAddShape::showCenterMarker
+	Small, filled marker at the anchor point, shown only while Ctrl-
+	anchoring is actually in effect right now (see applyPosition()) --
+	doubling as live confirmation that it is, rather than leaving the
+	user to infer it purely from how the shape happens to be growing.
+*/
+void DiagramEventAddShape::showCenterMarker(const QPointF &scenePos)
+{
+	if (!m_center_marker)
+	{
+		m_center_marker = new QGraphicsEllipseItem(-4, -4, 8, 8);
+		QPen pen(Qt::red);
+		pen.setCosmetic(true);
+		m_center_marker->setPen(pen);
+		m_center_marker->setBrush(Qt::red);
+		m_diagram->addItem(m_center_marker);
+	}
+	m_center_marker->setPos(scenePos);
+}
+
+void DiagramEventAddShape::hideCenterMarker()
+{
+	delete m_center_marker;
+	m_center_marker = nullptr;
 }
 
 /**
@@ -152,7 +199,14 @@ void DiagramEventAddShape::mousePressEvent(QGraphicsSceneMouseEvent *event)
 	}
 
 	QPointF pos = event->scenePos();
-	if (event->modifiers() != Qt::ControlModifier) {
+	// A bitwise flag check, not exact equality: modifiers() == Ctrl
+	// alone fails the moment any other key (Shift for the square/circle
+	// lock, or an incidental platform flag) is also held, silently
+	// falling through to snapToGrid() even though Ctrl is held --
+	// exactly what made Ctrl+Shift together feel "frozen" (both grid-
+	// snapped *and* square-locked, quantizing to whichever is coarser)
+	// and made "Ctrl = free positioning" not actually hold up.
+	if (!(event->modifiers() & Qt::ControlModifier)) {
 		pos = Diagram::snapToGrid(pos);
 	}
 
@@ -164,6 +218,14 @@ void DiagramEventAddShape::mousePressEvent(QGraphicsSceneMouseEvent *event)
 		{
 			m_shape_item = new QetShapeItem(pos, pos, m_shape_type);
 			m_anchor_point = pos;
+			// Decided once, here, rather than re-checked on every mouse
+			// move for the rest of the drag -- see applyPosition()'s doc
+			// comment for why continuous re-checking made releasing Ctrl
+			// mid-drag feel like a bug rather than a deliberate choice.
+			m_center_anchored = (event->modifiers() & Qt::ControlModifier)
+					&& (m_shape_type == QetShapeItem::Rectangle || m_shape_type == QetShapeItem::Ellipse);
+			if (m_center_anchored)
+				showCenterMarker(m_anchor_point);
 				//Start from whatever pen/brush was last applied this
 				//session, rather than always the hardcoded default.
 			if (LastUsedStyle::hasShapePen()) {
@@ -187,6 +249,7 @@ void DiagramEventAddShape::mousePressEvent(QGraphicsSceneMouseEvent *event)
 			}
 			m_diagram->undoStack().push (new AddGraphicsObjectCommand(m_shape_item, m_diagram));
 			m_shape_item = nullptr; //< set to nullptr for create new shape at next left clic
+			hideCenterMarker();
 			updateCreationHint();
 		}
 			//Else add a new point to polyline
@@ -213,16 +276,74 @@ void DiagramEventAddShape::mouseMoveEvent(QGraphicsSceneMouseEvent *event)
 {
 	updateHelpCross(event->scenePos());
 
+	// Re-asserted on every move, not just once at activation: Qt's own
+	// built-in "show an action's statusTip on hover" has its own
+	// internal "restore whatever was there before" logic for when the
+	// hover ends. Since our message is shown *during* that same hover
+	// session (the user is still over the toolbar icon when the
+	// deferred constructor-time call fires), Qt's hover-tracking has no
+	// idea we changed the status bar in the meantime -- the moment the
+	// mouse leaves the icon for the canvas, it "restores" to whatever it
+	// remembers being there before its own tip started, which is stale
+	// and empty, silently overwriting ours. Re-showing it here, on every
+	// move within the canvas, simply outlasts that one-time restore.
+	updateCreationHint();
+
 	if (m_shape_item && event->buttons() == Qt::NoButton)
 	{
+		m_last_mouse_scene_pos = event->scenePos();   // raw, before snapping -- see reapplyLastPosition()
+
 		QPointF pos = event->scenePos();
-		if (event->modifiers() != Qt::ControlModifier) {
+		if (!(event->modifiers() & Qt::ControlModifier)) {
 			pos = Diagram::snapToGrid(pos);
 		}
 
 		applyPosition(pos, event->modifiers());
 		event->setAccepted(true);
 	}
+}
+
+/**
+	@brief DiagramEventAddShape::keyPressEvent / keyReleaseEvent
+	Pressing or releasing Shift (the square/circle lock) does nothing
+	visible on its own -- applyPosition() only ever runs from
+	mouseMoveEvent, so without this, a keyboard-only change just sits
+	there until the next, often incidental, pixel of mouse movement
+	brings the shape in line with it. That's exactly what looked like a
+	freeze: holding Shift while the mouse is genuinely still produces no
+	visible change (correctly -- nothing has moved), and it only
+	"unsticks" once the mouse moves again, which released keys tend to
+	coincide with purely by hand tremor, not because releasing itself
+	did anything. Re-running the last known mouse position through
+	applyPosition() here makes the key press or release itself the
+	trigger, giving immediate feedback instead of waiting on chance.
+*/
+void DiagramEventAddShape::keyPressEvent(QKeyEvent *event)
+{
+	reapplyLastPosition(event);
+}
+
+void DiagramEventAddShape::keyReleaseEvent(QKeyEvent *event)
+{
+	reapplyLastPosition(event);
+}
+
+void DiagramEventAddShape::reapplyLastPosition(QKeyEvent *event)
+{
+	if (!m_shape_item || (event->key() != Qt::Key_Shift && event->key() != Qt::Key_Control))
+		return;
+
+	// A fresh, global query, not event->modifiers(): for a press/release
+	// of a modifier key itself, whether that key is already reflected in
+	// the key event's own modifiers() is ambiguous and platform-
+	// dependent -- the same reason Diagram::snapToGrid() queries this
+	// directly rather than trusting a passed-in modifiers() value.
+	const Qt::KeyboardModifiers mods = QGuiApplication::keyboardModifiers();
+	QPointF pos = m_last_mouse_scene_pos;
+	if (!(mods & Qt::ControlModifier))
+		pos = Diagram::snapToGrid(pos);
+
+	applyPosition(pos, mods);
 }
 
 /**
@@ -243,7 +364,7 @@ void DiagramEventAddShape::mouseReleaseEvent(QGraphicsSceneMouseEvent *event)
 				m_shape_item->removePoints();
 
 				QPointF pos = event->scenePos();
-				if (event->modifiers() != Qt::ControlModifier)
+				if (!(event->modifiers() & Qt::ControlModifier))
 					pos = Diagram::snapToGrid(pos);
 
 				m_shape_item->setP2(pos); //Set the new last point under the cursor
@@ -255,6 +376,7 @@ void DiagramEventAddShape::mouseReleaseEvent(QGraphicsSceneMouseEvent *event)
 			m_diagram->removeItem(m_shape_item);
 			delete m_shape_item;
 			m_shape_item = nullptr;
+			hideCenterMarker();
 			updateCreationHint();
 			event->setAccepted(true);
 			return;
@@ -292,6 +414,7 @@ void DiagramEventAddShape::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event
 		}
 		m_diagram->undoStack().push (new AddGraphicsObjectCommand(m_shape_item, m_diagram));
 		m_shape_item = nullptr; //< set to nullptr for create new shape at next left clic
+		hideCenterMarker();
 		updateCreationHint();
 		event->setAccepted(true);
 	}

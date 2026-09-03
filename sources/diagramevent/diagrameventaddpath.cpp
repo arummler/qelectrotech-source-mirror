@@ -19,12 +19,16 @@
 
 #include "../diagram.h"
 #include "../lastusedstyle.h"
+#include "../qetapp.h"
+#include "../qetdiagrameditor.h"
 #include "../undocommand/addgraphicsobjectcommand.h"
 
 #include <QGraphicsLineItem>
 #include <QGraphicsSceneMouseEvent>
 #include <QKeyEvent>
 #include <QLineF>
+#include <QStatusBar>
+#include <QTimer>
 
 /**
 	@brief DiagramEventAddPath::DiagramEventAddPath
@@ -38,6 +42,12 @@ DiagramEventAddPath::DiagramEventAddPath(Diagram *diagram) :
 {
 	m_running = true;
 	init();
+	// Deferred for the same reason as DiagramEventAddShape's own
+	// constructor-time hint: Diagram::setEventInterface() destroys
+	// whatever tool was previously active *after* this constructor
+	// returns, and that tool's own destructor clears the status bar --
+	// an immediate show here would just get wiped out moments later.
+	QTimer::singleShot(0, this, [this]() { showHint(); });
 }
 
 DiagramEventAddPath::~DiagramEventAddPath()
@@ -50,8 +60,38 @@ DiagramEventAddPath::~DiagramEventAddPath()
 	delete m_help_horiz;
 	delete m_help_verti;
 
+	if (m_diagram && !m_diagram->views().isEmpty())
+	{
+		if (auto *editor = QETApp::diagramEditorAncestorOf(m_diagram->views().constFirst()))
+			editor->statusBar()->clearMessage();
+	}
+
 	foreach (QGraphicsView *v, m_diagram->views())
 		v->setContextMenuPolicy(Qt::DefaultContextMenu);
+}
+
+/**
+	@brief DiagramEventAddPath::showHint
+	Re-asserted on every move within the canvas (see mouseMoveEvent), not
+	just once at activation: Qt's own built-in "show an action's
+	statusTip on hover" has its own internal "restore whatever was there
+	before" logic for when the hover ends. Since this message is first
+	shown *during* that same hover session (the user is still over the
+	toolbar icon when the deferred constructor-time call above fires),
+	Qt's hover-tracking has no idea this code changed the status bar in
+	the meantime -- the moment the mouse leaves the icon for the canvas,
+	it silently restores whatever it remembers being there before its
+	own tip started, overwriting this one. Re-showing it on every move
+	within the canvas simply outlasts that one-time restore.
+*/
+void DiagramEventAddPath::showHint() const
+{
+	if (!m_diagram || m_diagram->views().isEmpty())
+		return;
+	if (auto *editor = QETApp::diagramEditorAncestorOf(m_diagram->views().constFirst()))
+		editor->statusBar()->showMessage(tr("Clic: point anguleux. Cliquer-glisser: point courbe. "
+		                                     "Clic sur le premier point: fermer. Échap/Entrée: terminer. "
+		                                     "Clic droit: annuler le dernier point."));
 }
 
 void DiagramEventAddPath::init()
@@ -158,6 +198,7 @@ void DiagramEventAddPath::mousePressEvent(QGraphicsSceneMouseEvent *event)
 void DiagramEventAddPath::mouseMoveEvent(QGraphicsSceneMouseEvent *event)
 {
 	updateHelpCross(event->scenePos());
+	showHint();
 
 	if (m_shape_item)
 	{

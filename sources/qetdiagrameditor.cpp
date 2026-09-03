@@ -61,6 +61,7 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
+#include <QTimer>
 #ifdef BUILD_WITHOUT_KF
 #	include "ui/nokde/kautosavefile.h"
 #else
@@ -719,6 +720,19 @@ void QETDiagramEditor::setUpActions()
 	connect(&m_zoom_actions_group, &QActionGroup::triggered, this, &QETDiagramEditor::zoomGroupTriggered);
 
 		//Adding action (add text, image, shape...)
+	// Exclusive (the default) prevents the active action from ever being
+	// unchecked by clicking it again -- Qt only lets you switch to a
+	// different one. That's exactly why clicking an already-active
+	// tool's own icon never actually deactivated it: confirmed by
+	// logging every addItemGroupTriggered() call and finding
+	// isChecked()==true on *every* click, including the one meant to
+	// turn the tool off -- the click-handling code's own "was this an
+	// uncheck?" check was correct, its precondition just could never
+	// occur. ExclusiveOptional allows exactly one more transition:
+	// clicking the currently-checked action unchecks it, leaving none
+	// checked, which is required for "click the active tool to turn it
+	// off" to mean anything at the QAction level at all.
+	m_add_item_actions_group.setExclusionPolicy(QActionGroup::ExclusionPolicy::ExclusiveOptional);
 	QAction *add_text      = m_add_item_actions_group.addAction(QET::Icons::PartTextField, tr("Ajouter un champ de texte"));
 	QAction *add_image	   = m_add_item_actions_group.addAction(QET::Icons::adding_image,  tr("Ajouter une image"));
 #ifdef QET_HAS_QTPDF
@@ -728,7 +742,7 @@ void QETDiagramEditor::setUpActions()
 	QAction *add_rectangle = m_add_item_actions_group.addAction(QET::Icons::PartRectangle, tr("Ajouter un rectangle"));
 	QAction *add_ellipse   = m_add_item_actions_group.addAction(QET::Icons::PartEllipse,   tr("Ajouter une ellipse"));
 	QAction *add_polyline  = m_add_item_actions_group.addAction(QET::Icons::PartPolygon,   tr("Ajouter une polyligne"));
-	QAction *add_path      = m_add_item_actions_group.addAction(QET::Icons::PartPolygon,   tr("Ajouter une courbe"));
+	QAction *add_path      = m_add_item_actions_group.addAction(QET::Icons::PartBezier,   tr("Ajouter une courbe"));
 	QAction *add_terminal_strip = m_add_item_actions_group.addAction(QET::Icons::TerminalStrip, tr("Ajouter un plan de bornes"));
 
 	add_text     ->setStatusTip(tr("Ajoute un champ de texte sur le folio actuel"));
@@ -1560,6 +1574,27 @@ void QETDiagramEditor::addItemGroupTriggered(QAction *action)
 	if (Q_UNLIKELY (!currentDiagramView() || !currentDiagramView()->diagram() || value.isEmpty())) return;
 
 	Diagram *d = currentDiagramView()->diagram();
+
+	// This action group allows deselecting the currently-active tool by
+	// clicking its own icon again, not just switching between tools --
+	// that click still fires this slot (QActionGroup::triggered fires on
+	// every click in the group, checked-state-changing or not), so
+	// without this check it would unconditionally construct *another*
+	// instance of the same tool and reactivate it, leaving the tool
+	// fully active in the canvas while its own toolbar button shows
+	// unchecked -- exactly backwards from what the click was for.
+	// Scoped to checkable actions specifically: image/pdf/terminal_strip
+	// are one-shot actions (pick a file, open a dialog) with no
+	// persistent "active tool" state at all, and aren't even checkable
+	// -- isChecked() on them is always false, so without this guard
+	// they'd hit the branch above on every single click and never
+	// reach their own handling below.
+	if (action->isCheckable() && !action->isChecked())
+	{
+		d->clearEventInterface();
+		return;
+	}
+
 	DiagramEventInterface *diagram_event = nullptr;
 
 	if (value == "line")
@@ -1573,12 +1608,6 @@ void QETDiagramEditor::addItemGroupTriggered(QAction *action)
 	else if (value == "path")
 	{
 		diagram_event = new DiagramEventAddPath (d);
-		statusBar()->showMessage(tr("Clic: point anguleux. Cliquer-glisser: point courbe. "
-		                             "Clic sur le premier point: fermer. Échap/Entrée: terminer. "
-		                             "Clic droit: annuler le dernier point."));
-		connect(diagram_event, &DiagramEventInterface::destroyed, [this]() {
-		statusBar()->clearMessage();
-		});
 	}
 	else if (value == "image")
 	{
@@ -1621,6 +1650,22 @@ void QETDiagramEditor::addItemGroupTriggered(QAction *action)
 	{
 		d->setEventInterface(diagram_event);
 		connect(diagram_event, &DiagramEventInterface::destroyed, [action]() {action->setChecked(false);});
+		// Defensive: on this style/theme, the toolbar button bound to an
+		// exclusive-group action doesn't reliably repaint its checked
+		// appearance after the group briefly had *no* action checked at
+		// all (the gap between unchecking one tool and checking one
+		// again, even the same one) -- confirmed by tracing a real
+		// recording frame by frame: the status bar correctly showed this
+		// tool's "before first click" hint (which can only appear from
+		// inside a freshly-constructed tool's own constructor, so the
+		// action's checked state and the tool's activation were both
+		// genuinely correct) while the button itself stayed visually
+		// unchecked for a sustained period. Forcing an explicit repaint
+		// here makes the button's appearance match its actual state
+		// regardless of whether Qt's own change notification fired
+		// correctly.
+		if (QWidget *button = m_add_item_tool_bar->widgetForAction(action))
+			button->update();
 	}
 }
 
