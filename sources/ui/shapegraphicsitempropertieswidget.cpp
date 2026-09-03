@@ -73,7 +73,7 @@ void ShapeGraphicsItemPropertiesWidget::setItem(QetShapeItem *shape)
 	}
 
 	m_shape = shape;
-	ui->m_close_polygon->setVisible(m_shape->shapeType() == QetShapeItem::Polygon);
+	ui->m_close_polygon->setVisible(m_shape->shapeType() == QetShapeItem::Polygon || m_shape->shapeType() == QetShapeItem::Path);
 	ui->m_filling_gb->setHidden(m_shape->shapeType() == QetShapeItem::Line);
 
 	updateUi();

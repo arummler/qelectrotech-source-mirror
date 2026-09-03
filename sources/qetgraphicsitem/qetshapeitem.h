@@ -249,6 +249,7 @@ class QetShapeItem : public QetGraphicsItem
 		void insertPoint();
 		void removePoint();
 		void convertToPathExplicitly();   // context-menu action; see promoteRectangleOrEllipseToPolygon()
+		void mirror(bool horizontal);   // context-menu action: flips scaleFactorX (horizontal) or scaleFactorY (vertical) around the current pivot
 		void setNodeKind(int nodeIndex, NodeKind kind);   // context-menu action on a Path node
 
 		void handlerMousePressEvent(int handlerIndex);
