@@ -141,6 +141,7 @@ void QetShapeItem::setP2(const QPointF &P2)
 	// shape's actual center once it was drawn out.
 	if (!m_pivotIsCustom)
 		resetPivotToBoundingRectCenter();
+	emit geometryChanged();
 }
 
 /**
@@ -158,6 +159,7 @@ bool QetShapeItem::setLine(const QLineF &line)
 	if (!m_pivotIsCustom)
 		resetPivotToBoundingRectCenter();
 	repositionHandles();
+	emit geometryChanged();
 	return true;
 }
 
@@ -177,6 +179,7 @@ bool QetShapeItem::setRect(const QRectF &rect)
 		if (!m_pivotIsCustom)
 			resetPivotToBoundingRectCenter();
 		repositionHandles();
+		emit geometryChanged();
 		return true;
 	}
 
@@ -199,17 +202,19 @@ bool QetShapeItem::setPolygon(const QPolygonF &polygon)
 	if (!m_pivotIsCustom)
 		resetPivotToBoundingRectCenter();
 	repositionHandles();
+	emit geometryChanged();
 	return true;
 }
 
 /**
 	@brief QetShapeItem::setClosed
-	Close this item, have effect only if this item is a polygon.
+	Close this item -- has effect for Polygon and Path only (the two
+	shape types with a genuine open/closed distinction at all).
 	@param close
 */
 void QetShapeItem::setClosed(bool close)
 {
-	if (m_shapeType == Polygon && close != m_closed)
+	if ((m_shapeType == Polygon || m_shapeType == Path) && close != m_closed)
 	{
 		prepareGeometryChange();
 		m_closed = close;
@@ -424,6 +429,7 @@ void QetShapeItem::setPathNodes(const QVector<PathNode> &nodes)
 	// repositionHandles() has no way to notice that on its own; it only
 	// moves whatever handles already exist.
 	rebuildHandles();
+	emit geometryChanged();
 }
 
 /**
@@ -1099,6 +1105,10 @@ void QetShapeItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event)
 					QAction *mirrorV = menu.data()->addAction(tr("Miroir vertical"));
 					connect(mirrorH, &QAction::triggered, this, [this]() { mirror(true); });
 					connect(mirrorV, &QAction::triggered, this, [this]() { mirror(false); });
+
+					menu.data()->addSeparator();
+					QAction *properties = menu.data()->addAction(tr("Propriétés..."));
+					connect(properties, &QAction::triggered, this, &QetShapeItem::editProperty);
 
 					menu.data()->addSeparator();
 					menu.data()->addActions(d_view->contextMenuActions());
@@ -2162,6 +2172,7 @@ void QetShapeItem::dragResize(int index, const QPointF &localPos, Qt::KeyboardMo
 		prepareGeometryChange();
 		(index == 0 ? m_P1 : m_P2) = localPos;
 		repositionHandles();
+		emit geometryChanged();
 		return;
 	}
 
@@ -2330,6 +2341,7 @@ void QetShapeItem::dragPathAnchor(int which, const QPointF &localPos, Qt::Keyboa
 		}
 	}
 	repositionHandles();
+	emit geometryChanged();
 }
 
 /**
@@ -2912,14 +2924,28 @@ bool QetShapeItem::toDXF(const QString &filepath,const QPen &pen)
 				Createdxf::dxfColor(pen));
 			return true;
 		case Polygon:
-			if(m_polygon.isClosed())
+			// m_closed, not m_polygon.isClosed(): m_polygon's own points
+			// never include a duplicate closing point in this design --
+			// outline() relies on m_closed + QPainterPath::closeSubpath()
+			// for the visual effect, so isClosed()'s geometric check
+			// (do the first and last points happen to coincide?) almost
+			// always reads false regardless of the user's actual intent.
+			if (m_closed)
 				Createdxf::drawPolygon(filepath,m_polygon,Createdxf::dxfColor(pen));
 			else
 				Createdxf::drawPolyline(filepath,m_polygon,Createdxf::dxfColor(pen));
 			return true;
 		case Path:
 		{
-			const QPolygonF flattened = mapToScene(outline().toFillPolygon());
+			// toSubpathPolygons(), not outline().toFillPolygon(): the
+			// latter exists for fill-rendering, which inherently needs a
+			// closed shape, so it silently appends a closing point onto
+			// *any* path regardless of m_closed -- confirmed directly
+			// against the real QPainterPath before relying on it here.
+			// toSubpathPolygons() has no such fill-oriented bias and
+			// correctly preserves the open/closed distinction.
+			const QList<QPolygonF> subpaths = outline().toSubpathPolygons();
+			const QPolygonF flattened = subpaths.isEmpty() ? QPolygonF() : mapToScene(subpaths.first());
 			if (m_closed)
 				Createdxf::drawPolygon(filepath, flattened, Createdxf::dxfColor(pen));
 			else

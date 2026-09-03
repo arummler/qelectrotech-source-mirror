@@ -73,6 +73,7 @@ class QetShapeItem : public QetGraphicsItem
 		void YRadiusChanged();
 		void transformChanged();
 		void arcChanged();
+		void geometryChanged();   // P1/P2, polygon points, or path nodes changed -- lets the properties panel stay in sync while a handle is dragged, not just when it's typed into
 
 	public:
 		enum ShapeType {Line	  =1,
