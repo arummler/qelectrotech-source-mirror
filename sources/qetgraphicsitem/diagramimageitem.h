@@ -20,8 +20,12 @@
 
 #include "qetgraphicsitem.h"
 
+#include <QColor>
+#include <QList>
+
 class QDomElement;
 class QDomDocument;
+class QGraphicsSceneContextMenuEvent;
 
 /**
 	This class represents a selectable, movable and editable image on a
@@ -30,6 +34,7 @@ class QDomDocument;
 */
 class DiagramImageItem : public QetGraphicsItem {
 	Q_OBJECT
+	Q_PROPERTY(QPixmap pixmap READ pixmap WRITE setPixmap NOTIFY pixmapChanged)
 
 	// constructors, destructor
 	public:
@@ -54,13 +59,43 @@ class DiagramImageItem : public QetGraphicsItem {
 	virtual QDomElement toXml(QDomDocument &) const;
 	void editProperty() override;
 	void setPixmap(const QPixmap &pixmap);
+	QPixmap pixmap() const { return pixmap_; }
 	QRectF boundingRect() const override;
 	QString name() const override;
-	
+
+	signals:
+	void pixmapChanged();
+
 	protected:
 	void paint(QPainter *, const QStyleOptionGraphicsItem *, QWidget *) override;
-	
+	void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
+
+	private:
+	void replaceImage();
+	void mirror(bool horizontal);
+	void setTransparentColor();
+	void crop();
+	static QPixmap computeDisplayPixmap(const QPixmap &base, const QRect &cropRect, const QList<QColor> &colors, int tolerance);
+
 	protected:
 	QPixmap pixmap_;
+	// The true, pristine original -- never itself cropped or colour-
+	// keyed. pixmap_ (the displayed result) is always re-derived from
+	// this plus m_crop_rect and m_transparent_colors/tolerance, via
+	// computeDisplayPixmap(). Without keeping this separate, re-opening
+	// either the crop or transparency dialog after using the other
+	// would show an already-modified image as if it were the source --
+	// areas already cropped away or coloured out would be gone for
+	// good, with no way to recover or adjust them, only start over.
+	// Updated by whatever genuinely replaces or reorients the image's
+	// actual content (construction, replaceImage(), and mirror(), which
+	// also mirrors m_crop_rect to keep referring to the same region of
+	// the now-flipped base) -- never by crop() or setTransparentColor()
+	// themselves, which only ever change which subset of this base is
+	// shown.
+	QPixmap m_base_pixmap;
+	QRect m_crop_rect;   // relative to m_base_pixmap; equals m_base_pixmap.rect() when nothing has been cropped
+	QList<QColor> m_transparent_colors;
+	int m_transparent_tolerance = 10;
 };
 #endif

@@ -722,8 +722,12 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ui/elementpropertieswidget.h
   ${QET_DIR}/sources/ui/formulaassistantdialog.cpp
   ${QET_DIR}/sources/ui/formulaassistantdialog.h
+  ${QET_DIR}/sources/ui/imagecropdialog.cpp
+  ${QET_DIR}/sources/ui/imagecropdialog.h
   ${QET_DIR}/sources/ui/imagepropertieswidget.cpp
   ${QET_DIR}/sources/ui/imagepropertieswidget.h
+  ${QET_DIR}/sources/ui/imagetransparentcolordialog.cpp
+  ${QET_DIR}/sources/ui/imagetransparentcolordialog.h
   ${QET_DIR}/sources/ui/importelementdialog.cpp
   ${QET_DIR}/sources/ui/importelementdialog.h
   ${QET_DIR}/sources/ui/importelementtextpatterndialog.cpp
