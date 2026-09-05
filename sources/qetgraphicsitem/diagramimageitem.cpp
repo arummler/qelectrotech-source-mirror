@@ -1064,23 +1064,24 @@ QVariant DiagramImageItem::itemChange(GraphicsItemChange change, const QVariant 
 	@brief DiagramImageItem::computeDisplayPixmap
 	Re-derives what pixmap_ should be from first principles: crop the
 	true original down to the chosen region, then colour-key whichever
-	colours have been picked out of it. Used whenever crop() or
-	setTransparentColor() changes one of those two independently, so
-	the other's effect is correctly re-applied on top rather than lost
-	or compounded -- cropping after colours were already picked has to
-	still show them keyed out; picking colours after a crop has to only
-	ever consider what's still actually part of the image.
+	colours have been picked out of it, each at its own tolerance. Used
+	whenever crop() or setTransparentColor() changes one of those two
+	independently, so the other's effect is correctly re-applied on top
+	rather than lost or compounded -- cropping after colours were
+	already picked has to still show them keyed out; picking colours
+	after a crop has to only ever consider what's still actually part
+	of the image.
 	@param base the true, uncropped original
 	@param cropRect the region of base to keep, in base's own coordinates
-	@param colors colours to key transparent within the cropped region
-	@param tolerance how loosely to match those colours, 0-100
+	@param colors colours (each with its own tolerance) to key transparent within the cropped region
 */
-QPixmap DiagramImageItem::computeDisplayPixmap(const QPixmap &base, const QRect &cropRect, const QList<QColor> &colors, int tolerance)
+QPixmap DiagramImageItem::computeDisplayPixmap(const QPixmap &base, const QRect &cropRect,
+		const QList<ImageTransparentColorDialog::PickedColor> &colors)
 {
 	const QPixmap cropped = cropRect == base.rect() ? base : base.copy(cropRect);
 	if (colors.isEmpty())
 		return cropped;
-	return QPixmap::fromImage(ImageTransparentColorDialog::applyColorKey(cropped.toImage(), colors, tolerance));
+	return QPixmap::fromImage(ImageTransparentColorDialog::applyColorKey(cropped.toImage(), colors));
 }
 
 /**
@@ -1142,19 +1143,25 @@ bool DiagramImageItem::fromXml(const QDomElement &e)
 	m_base_pixmap = pixmap;
 	m_crop_rect = pixmap.rect();
 	m_transparent_colors.clear();
-	m_transparent_tolerance = 10;
 
 	const QDomElement colorsElement = e.firstChildElement("transparent_colors");
 	bool hasColors = !colorsElement.isNull();
 	if (hasColors)
 	{
-		m_transparent_tolerance = colorsElement.attribute("tolerance", "10").toInt();
+		// Files saved before per-colour tolerance existed wrote a
+		// single value on the wrapper element itself, shared by every
+		// colour -- kept here purely as the fallback default for a
+		// <color> that doesn't carry its own attribute, which for
+		// those old files is every one of them, exactly reproducing
+		// what they used to do (one tolerance applied to all of them).
+		const int wrapperTolerance = colorsElement.attribute("tolerance", "10").toInt();
 		for (const QDomElement &colorElement : QET::findInDomElement(colorsElement, "color"))
 		{
-			m_transparent_colors.append(QColor(
-					colorElement.attribute("r").toInt(),
-					colorElement.attribute("g").toInt(),
-					colorElement.attribute("b").toInt()));
+			m_transparent_colors.append({
+					QColor(colorElement.attribute("r").toInt(),
+					       colorElement.attribute("g").toInt(),
+					       colorElement.attribute("b").toInt()),
+					colorElement.attribute("tolerance", QString::number(wrapperTolerance)).toInt()});
 		}
 	}
 
@@ -1296,13 +1303,21 @@ QDomElement DiagramImageItem::toXml(QDomDocument &document) const
 	if (hasColors)
 	{
 		QDomElement colorsElement = document.createElement("transparent_colors");
-		colorsElement.setAttribute("tolerance", m_transparent_tolerance);
-		for (const QColor &color : m_transparent_colors)
+		// Best-effort fallback for an OLDER version of this same code
+		// (from before per-colour tolerance existed) reading a file
+		// saved by this one: uses the first colour's own tolerance as
+		// a single, plausible value rather than some fixed default,
+		// in case it ever needs to open a file like this. Newer code
+		// (including this version) always prefers each <color>'s own
+		// attribute below over this one.
+		colorsElement.setAttribute("tolerance", m_transparent_colors.first().tolerance);
+		for (const auto &pc : m_transparent_colors)
 		{
 			QDomElement colorElement = document.createElement("color");
-			colorElement.setAttribute("r", color.red());
-			colorElement.setAttribute("g", color.green());
-			colorElement.setAttribute("b", color.blue());
+			colorElement.setAttribute("r", pc.color.red());
+			colorElement.setAttribute("g", pc.color.green());
+			colorElement.setAttribute("b", pc.color.blue());
+			colorElement.setAttribute("tolerance", pc.tolerance);
 			colorsElement.appendChild(colorElement);
 		}
 		result.appendChild(colorsElement);
@@ -1520,12 +1535,11 @@ void DiagramImageItem::setTransparentColor()
 
 	QWidget *parentWidget = diagram()->views().isEmpty() ? nullptr : diagram()->views().first();
 	const QPixmap croppedBase = m_base_pixmap.copy(m_crop_rect);
-	ImageTransparentColorDialog dialog(croppedBase, m_transparent_colors, m_transparent_tolerance, parentWidget);
+	ImageTransparentColorDialog dialog(croppedBase, m_transparent_colors, parentWidget);
 	if (dialog.exec() != QDialog::Accepted)
 		return;
 
 	m_transparent_colors = dialog.pickedColors();
-	m_transparent_tolerance = dialog.tolerance();
 
 	const QPixmap oldPixmap = pixmap_;
 	const QPixmap newPixmap = dialog.resultPixmap();
@@ -1609,7 +1623,7 @@ void DiagramImageItem::crop()
 	const QPointF oldPos = pos();
 
 	const QPixmap oldPixmap = pixmap_;
-	const QPixmap newPixmap = computeDisplayPixmap(m_base_pixmap, newCropRect, m_transparent_colors, m_transparent_tolerance);
+	const QPixmap newPixmap = computeDisplayPixmap(m_base_pixmap, newCropRect, m_transparent_colors);
 	m_crop_rect = newCropRect;
 
 	// boundingRect() is exactly QRectF(pixmap_.rect()) (confirmed by

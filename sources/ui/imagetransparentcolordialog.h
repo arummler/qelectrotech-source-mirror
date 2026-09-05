@@ -24,9 +24,8 @@
 #include <QLabel>
 #include <QList>
 
-class QSlider;
+class QVBoxLayout;
 class QPushButton;
-class QHBoxLayout;
 class QMouseEvent;
 
 /**
@@ -72,74 +71,88 @@ class ClickableImageLabel : public QLabel
 	@brief The ImageTransparentColorDialog class
 	Lets the user click directly on a preview of the image to sample one
 	or more colors -- each click adds to the set rather than replacing
-	the previous pick, shown as a row of removable swatches -- adjust a
-	shared tolerance, and see a live checkerboard-backed preview of the
-	result before committing. A self-contained modal dialog rather than
-	a diagram-level "click the canvas to pick" interaction mode, since
-	this needs neither undo-during-drag nor coexistence with other
-	tools; it only ever needs a handful of clicks, evaluated against a
-	pixmap the caller already has in hand.
+	the previous pick -- each shown as its own row: a colour swatch, a
+	slider for that colour's own tolerance right next to it, and a
+	remove button. Each colour keeps its own tolerance rather than
+	sharing one: a white background and a grey border rarely need the
+	same looseness of match, and forcing one tolerance onto both meant
+	either the background left ragged edges or the border ate into
+	content near it. A live checkerboard-backed preview of the combined
+	result updates as any slider moves. A self-contained modal dialog
+	rather than a diagram-level "click the canvas to pick" interaction
+	mode, since this needs neither undo-during-drag nor coexistence
+	with other tools; it only ever needs a handful of clicks, evaluated
+	against a pixmap the caller already has in hand.
 */
 class ImageTransparentColorDialog : public QDialog
 {
 	Q_OBJECT
 
 	public:
+		/// One picked colour and the tolerance it's individually keyed
+		/// with -- the whole point of this being a struct rather than
+		/// two parallel lists is that the two can never drift out of
+		/// index alignment with each other.
+		struct PickedColor
+		{
+			QColor color;
+			int tolerance;
+		};
+
 		/// @param basePixmap the pristine source to pick colours from --
 		/// the caller's responsibility to pass the true original, not
 		/// an already colour-keyed result, or previously-transparent
 		/// areas would show as plain background rather than a pickable
 		/// surface, and re-picking the same colour would be a no-op.
-		/// @param existingColors colours already keyed out of basePixmap
-		/// in a previous session, shown as swatches from the start
-		/// rather than forcing them to be re-picked from scratch.
-		/// @param existingTolerance the tolerance from that previous
-		/// session, if any.
-		explicit ImageTransparentColorDialog(const QPixmap &basePixmap, const QList<QColor> &existingColors = {},
-				int existingTolerance = 10, QWidget *parent = nullptr);
+		/// @param existingColors colours (with their individual
+		/// tolerances) already keyed out of basePixmap in a previous
+		/// session, shown as rows from the start rather than forcing
+		/// them to be re-picked from scratch.
+		explicit ImageTransparentColorDialog(const QPixmap &basePixmap,
+				const QList<PickedColor> &existingColors = {}, QWidget *parent = nullptr);
 
 		/// The resulting pixmap: basePixmap unchanged if no colour is
-		/// picked, colour-keyed against every picked colour otherwise.
+		/// picked, colour-keyed against every picked colour (each at
+		/// its own tolerance) otherwise.
 		QPixmap resultPixmap() const;
-		/// The final set of picked colours, for the caller to remember
-		/// across dialog sessions -- may differ from existingColors if
-		/// any were added or removed.
-		QList<QColor> pickedColors() const { return m_pickedColors; }
-		/// The final tolerance, for the same reason.
-		int tolerance() const { return m_tolerance; }
+		/// The final set of picked colours and their individual
+		/// tolerances, for the caller to remember across dialog
+		/// sessions -- may differ from existingColors if any were
+		/// added, removed, or had their tolerance adjusted.
+		QList<PickedColor> pickedColors() const { return m_pickedColors; }
 
 		/// Public so DiagramImageItem can re-derive its display pixmap
 		/// directly (base + crop + these colours) without needing to
 		/// re-open this dialog every time the crop region changes --
 		/// binary transparency within tolerance, not a smooth falloff:
-		/// every pixel within `tolerance` (0-100, mapped onto the
-		/// maximum possible RGB distance) of *any* of keyColors becomes
-		/// fully transparent, everything else keeps its existing alpha
-		/// untouched. Squared distance throughout, avoiding a sqrt per
-		/// pixel; breaks out of the inner loop on the first matching
-		/// colour, since further matches wouldn't change the outcome.
-		static QImage applyColorKey(const QImage &source, const QList<QColor> &keyColors, int tolerance);
+		/// every pixel within a colour's own `tolerance` (0-100, mapped
+		/// onto the maximum possible RGB distance) of that colour
+		/// becomes fully transparent, everything else keeps its
+		/// existing alpha untouched. Squared distance throughout,
+		/// avoiding a sqrt per pixel; breaks out of the inner loop on
+		/// the first matching colour, since further matches wouldn't
+		/// change the outcome.
+		static QImage applyColorKey(const QImage &source, const QList<PickedColor> &keyColors);
 
 	private slots:
 		void onColorPicked(const QColor &color);
-		void onToleranceChanged(int value);
 
 	private:
-		void removeColor(const QColor &color);
+		void setToleranceForIndex(int index, int value);
+		void removeColor(int index);
 		void rebuildSwatches();
 		void updatePreview();
 		static QPixmap onCheckerboard(const QImage &image);
 
-		QImage        m_sourceImage;
-		QImage        m_previewSourceImage;   // downsampled -- see ClickableImageLabel::displayImage()'s comment for why
-		QList<QColor> m_pickedColors;
-		int           m_tolerance = 10;
+		QImage              m_sourceImage;
+		QImage              m_previewSourceImage;   // downsampled -- see ClickableImageLabel::displayImage()'s comment for why
+		QList<PickedColor>  m_pickedColors;
+		int                 m_lastToleranceUsed = 10;   // seeds a newly-picked colour's own tolerance, so successive picks in one session feel consistent rather than each resetting to some fixed default
 
 		ClickableImageLabel *m_sourceLabel;
 		QLabel              *m_previewLabel;
-		QHBoxLayout         *m_swatchesLayout;
+		QVBoxLayout         *m_swatchesLayout;   // one row per picked colour, stacked vertically -- each row now carries its own slider, too wide to lay out side by side the way plain swatches once were
 		QLabel              *m_hintLabel;
-		QSlider             *m_toleranceSlider;
 		QPushButton         *m_okButton;
 };
 
