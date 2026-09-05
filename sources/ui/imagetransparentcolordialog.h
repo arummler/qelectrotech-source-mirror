@@ -45,6 +45,17 @@ class ClickableImageLabel : public QLabel
 	public:
 		explicit ClickableImageLabel(const QImage &sourceImage, QWidget *parent = nullptr);
 
+		/// The same downsampled image already computed for display --
+		/// reused as the live-preview source so a tolerance drag runs
+		/// its per-tick colour-key pass against a small image instead
+		/// of the full-resolution one, which on a large source (a
+		/// scanned schematic background, several Mpx) made every
+		/// intermediate slider tick visibly lag. resultPixmap() still
+		/// computes the final, committed result from the true
+		/// full-resolution source -- only the live preview is
+		/// downsampled.
+		QImage displayImage() const { return m_displayImage; }
+
 	signals:
 		void colorPicked(const QColor &color);
 
@@ -53,6 +64,7 @@ class ClickableImageLabel : public QLabel
 
 	private:
 		QImage m_source;
+		QImage m_displayImage;
 		qreal m_displayScale = 1.0;
 };
 
@@ -119,6 +131,7 @@ class ImageTransparentColorDialog : public QDialog
 		static QPixmap onCheckerboard(const QImage &image);
 
 		QImage        m_sourceImage;
+		QImage        m_previewSourceImage;   // downsampled -- see ClickableImageLabel::displayImage()'s comment for why
 		QList<QColor> m_pickedColors;
 		int           m_tolerance = 10;
 

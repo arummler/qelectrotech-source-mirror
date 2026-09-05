@@ -48,10 +48,10 @@ ClickableImageLabel::ClickableImageLabel(const QImage &sourceImage, QWidget *par
 	const qreal scaleH = qreal(MAX_DISPLAY_SIZE) / m_source.height();
 	m_displayScale = qMin(qreal(1.0), qMin(scaleW, scaleH));   // never upscale a small image, only ever shrink a large one
 
-	const QImage displayImage = (m_displayScale < 1.0)
+	m_displayImage = (m_displayScale < 1.0)
 			? m_source.scaled(m_source.size() * m_displayScale, Qt::KeepAspectRatio, Qt::SmoothTransformation)
 			: m_source;
-	setPixmap(QPixmap::fromImage(displayImage));
+	setPixmap(QPixmap::fromImage(m_displayImage));
 	setCursor(Qt::CrossCursor);
 	setToolTip(tr("Cliquez pour choisir une couleur"));
 }
@@ -101,6 +101,7 @@ ImageTransparentColorDialog::ImageTransparentColorDialog(const QPixmap &basePixm
 	setWindowTitle(tr("Couleur transparente"));
 
 	m_sourceLabel = new ClickableImageLabel(m_sourceImage, this);
+	m_previewSourceImage = m_sourceLabel->displayImage();
 	m_previewLabel = new QLabel(this);
 
 	m_hintLabel = new QLabel(this);
@@ -232,15 +233,22 @@ void ImageTransparentColorDialog::onToleranceChanged(int value)
 /**
 	@brief ImageTransparentColorDialog::updatePreview
 	Recomputes the checkerboard-backed preview against the current set
-	of picked colours and the shared tolerance. Always runs against
-	m_sourceImage (the original, full-resolution image), not any
-	already-keyed result -- so adjusting the tolerance, or adding or
-	removing a colour, re-evaluates every picked colour from scratch
-	each time rather than compounding successive passes.
+	of picked colours and the shared tolerance. Runs against
+	m_previewSourceImage (the same downsampled copy ClickableImageLabel
+	already computed for its own display, not the full-resolution
+	m_sourceImage) -- this fires on every tolerance slider tick, not
+	just on release, and a full-resolution O(width*height*colours) pass
+	per tick was visibly laggy on a large source image. resultPixmap(),
+	below, still computes the final, committed result at full
+	resolution -- only this live preview is downsampled. Always
+	re-evaluates every picked colour from scratch against
+	m_previewSourceImage, not any already-keyed result, so adjusting
+	the tolerance or adding/removing a colour never compounds successive
+	passes.
 */
 void ImageTransparentColorDialog::updatePreview()
 {
-	const QImage keyed = applyColorKey(m_sourceImage, m_pickedColors, m_tolerance);
+	const QImage keyed = applyColorKey(m_previewSourceImage, m_pickedColors, m_tolerance);
 	m_previewLabel->setPixmap(onCheckerboard(keyed));
 }
 
