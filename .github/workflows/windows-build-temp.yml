@@ -1,0 +1,277 @@
+name: Windows Build Temp
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # =============================================================================
+  # Job 1: Qt5 build (stable track)
+  # =============================================================================
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          cache: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-qt5-base
+            mingw-w64-ucrt-x86_64-qt5-svg
+            mingw-w64-ucrt-x86_64-qt5-tools
+            mingw-w64-ucrt-x86_64-qt5-translations
+            mingw-w64-ucrt-x86_64-qt5-pdf
+            mingw-w64-ucrt-x86_64-sqlite3
+            mingw-w64-ucrt-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-kwidgetsaddons
+            mingw-w64-ucrt-x86_64-kcoreaddons
+            mingw-w64-ucrt-x86_64-extra-cmake-modules
+            mingw-w64-ucrt-x86_64-nsis
+            mingw-w64-ucrt-x86_64-angleproject
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: C:\Users\runneradmin\AppData\Local\ccache
+          key: ccache-windows-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-windows-${{ github.ref_name }}-
+            ccache-windows-
+
+      - name: Configure ccache
+        shell: msys2 {0}
+        run: |
+          /ucrt64/bin/ccache --set-config=max_size=500M
+          /ucrt64/bin/ccache --set-config=compression=true
+          /ucrt64/bin/ccache -z
+          echo "=== ccache config ==="
+          /ucrt64/bin/ccache -p
+
+      - name: Patch NSIS Welcome page — fix title font size
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          WELCOME_NSH=$(find /ucrt64 -path "*/Modern UI 2/Pages/Welcome.nsh" | head -1)
+          if [ -z "$WELCOME_NSH" ]; then
+            echo "WARNING: Welcome.nsh not found, skipping font patch"
+          else
+            echo "Patching: $WELCOME_NSH"
+            sed -i '/WelcomePage\.Title\.Font/s/"[0-9]\+" "700"/"10" "700"/' "$WELCOME_NSH"
+            grep 'WelcomePage.Title.Font' "$WELCOME_NSH"
+            echo "  OK font size patched to 10"
+          fi
+
+          FINISH_NSH=$(find /ucrt64 -path "*/Modern UI 2/Pages/Finish.nsh" | head -1)
+          if [ -z "$FINISH_NSH" ]; then
+            echo "WARNING: Finish.nsh not found, skipping font patch"
+          else
+            echo "Patching: $FINISH_NSH"
+            sed -i '/FinishPage\.Title\.Font/s/"[0-9]\+" "700"/"10" "700"/' "$FINISH_NSH"
+            grep 'FinishPage.Title.Font' "$FINISH_NSH"
+            echo "  OK font size patched to 10"
+          fi
+
+      - name: Force Qt5 — remove Qt6 cmake + tools
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          rm -rf /ucrt64/lib/cmake/Qt6
+          pacman -R --noconfirm mingw-w64-ucrt-x86_64-qt6-tools 2>/dev/null || true
+          echo "=== windeployqt binaries ==="
+          ls /ucrt64/bin/windeployqt* || echo "NO windeployqt found!"
+
+      - name: Build with cmake
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir build && cd build
+          NPROC=$(nproc)
+          echo "Available CPUs: $NPROC"
+
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/ucrt64 \
+            -DQt5_DIR=/ucrt64/lib/cmake/Qt5 \
+            -DQT_VERSION_MAJOR=5 \
+            -DCMAKE_DISABLE_FIND_PACKAGE_Qt6=ON \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_POLICY_DEFAULT_CMP0077=NEW \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_CXX_FLAGS="-DQET_EXPORT_PROJECT_DB" \
+            -DCMAKE_C_COMPILER_LAUNCHER=/ucrt64/bin/ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=/ucrt64/bin/ccache \
+            -DSQLite3_INCLUDE_DIR=/ucrt64/include \
+            -DSQLite3_LIBRARY=/ucrt64/lib/libsqlite3.dll.a \
+            ..
+          ninja -j"$NPROC"
+
+      - name: Show ccache stats
+        shell: msys2 {0}
+        run: |
+          echo "=== ccache statistics ==="
+          /ucrt64/bin/ccache -s
+
+      - name: Verify exe was built
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          EXE=$(find "$GITHUB_WORKSPACE/build" -maxdepth 3 -iname "qelectrotech.exe" | head -1)
+          if [ -z "$EXE" ]; then
+            echo "ERROR: no qelectrotech.exe found in build/"
+            find "$GITHUB_WORKSPACE/build" -maxdepth 3 -name "*.exe" || true
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$EXE")
+          echo "Exe found: $EXE ($SIZE bytes)"
+          [ "$SIZE" -gt 100000 ] || { echo "ERROR: exe too small"; exit 1; }
+
+
+  # =============================================================================
+  # Job 2: Qt6 build (EXPERIMENTAL track)
+  #
+  # Version label: the C++ source (sources/qetversion.cpp) intentionally stays
+  # Qt-agnostic — QT_VERSION-based detection inside the binary proved unreliable
+  # (see commit e1aa65f, reverting 608ca984). Here the CI job itself knows with
+  # certainty which Qt major version it configured (-DQT_VERSION_MAJOR=6), so it
+  # is safe to label the *package* "0.200.1" at this level, without touching
+  # QetVersion::currentVersion() or making the binary self-detect its Qt build.
+  # =============================================================================
+  build-windows-qt6:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          cache: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-svg
+            mingw-w64-ucrt-x86_64-qt6-tools
+            mingw-w64-ucrt-x86_64-qt6-translations
+            mingw-w64-ucrt-x86_64-qt6-pdf
+            mingw-w64-ucrt-x86_64-sqlite3
+            mingw-w64-ucrt-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-nsis
+            mingw-w64-ucrt-x86_64-angleproject
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: C:\Users\runneradmin\AppData\Local\ccache
+          key: ccache-windows-qt6-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-windows-qt6-${{ github.ref_name }}-
+            ccache-windows-qt6-
+
+      - name: Configure ccache
+        shell: msys2 {0}
+        run: |
+          /ucrt64/bin/ccache --set-config=max_size=500M
+          /ucrt64/bin/ccache --set-config=compression=true
+          /ucrt64/bin/ccache -z
+          echo "=== ccache config ==="
+          /ucrt64/bin/ccache -p
+
+      - name: Patch NSIS Welcome page — fix title font size
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          WELCOME_NSH=$(find /ucrt64 -path "*/Modern UI 2/Pages/Welcome.nsh" | head -1)
+          if [ -z "$WELCOME_NSH" ]; then
+            echo "WARNING: Welcome.nsh not found, skipping font patch"
+          else
+            echo "Patching: $WELCOME_NSH"
+            sed -i '/WelcomePage\.Title\.Font/s/"[0-9]\+" "700"/"10" "700"/' "$WELCOME_NSH"
+            grep 'WelcomePage.Title.Font' "$WELCOME_NSH"
+            echo "  OK font size patched to 10"
+          fi
+
+          FINISH_NSH=$(find /ucrt64 -path "*/Modern UI 2/Pages/Finish.nsh" | head -1)
+          if [ -z "$FINISH_NSH" ]; then
+            echo "WARNING: Finish.nsh not found, skipping font patch"
+          else
+            echo "Patching: $FINISH_NSH"
+            sed -i '/FinishPage\.Title\.Font/s/"[0-9]\+" "700"/"10" "700"/' "$FINISH_NSH"
+            grep 'FinishPage.Title.Font' "$FINISH_NSH"
+            echo "  OK font size patched to 10"
+          fi
+
+      - name: Build with cmake
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir build && cd build
+          NPROC=$(nproc)
+          echo "Available CPUs: $NPROC"
+
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/ucrt64 \
+            -DQt6_DIR=/ucrt64/lib/cmake/Qt6 \
+            -DQT_VERSION_MAJOR=6 \
+            -DBUILD_WITH_KF=OFF \
+            -DPACKAGE_TESTS=OFF \
+            -DCMAKE_POLICY_DEFAULT_CMP0077=NEW \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_CXX_FLAGS="-DQET_EXPORT_PROJECT_DB" \
+            -DCMAKE_C_COMPILER_LAUNCHER=/ucrt64/bin/ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=/ucrt64/bin/ccache \
+            -DSQLite3_INCLUDE_DIR=/ucrt64/include \
+            -DSQLite3_LIBRARY=/ucrt64/lib/libsqlite3.dll.a \
+            ..
+          ninja -j"$NPROC"
+
+      - name: Show ccache stats
+        shell: msys2 {0}
+        run: |
+          echo "=== ccache statistics ==="
+          /ucrt64/bin/ccache -s
+
+      - name: Verify exe was built
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          EXE=$(find "$GITHUB_WORKSPACE/build" -maxdepth 3 -iname "qelectrotech.exe" | head -1)
+          if [ -z "$EXE" ]; then
+            echo "ERROR: no qelectrotech.exe found in build/"
+            find "$GITHUB_WORKSPACE/build" -maxdepth 3 -name "*.exe" || true
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$EXE")
+          echo "Exe found: $EXE ($SIZE bytes)"
+          [ "$SIZE" -gt 100000 ] || { echo "ERROR: exe too small"; exit 1; }
+
