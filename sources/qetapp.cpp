@@ -198,6 +198,26 @@ QETApp *QETApp::instance()
 }
 
 /**
+	@brief QETApp::loadedQetTranslationFile
+	@return path of the QET .qm file actually loaded, empty if none
+	(diagnostic helper for the startup log, see MachineInfo)
+*/
+QString QETApp::loadedQetTranslationFile()
+{
+	return m_qetapp ? m_qetapp->qetTranslator.filePath() : QString();
+}
+
+/**
+	@brief QETApp::loadedQtTranslationFile
+	@return path of the Qt .qm file actually loaded, empty if none
+	(diagnostic helper for the startup log, see MachineInfo)
+*/
+QString QETApp::loadedQtTranslationFile()
+{
+	return m_qetapp ? m_qetapp->qtTranslator.filePath() : QString();
+}
+
+/**
 	@brief QETApp::setLanguage
 	Change the language used by the application.
 	\~French Change le langage utilise par l'application.
@@ -234,14 +254,21 @@ void QETApp::setLanguage(const QString &desired_language) {
 	// desired_language may be a full locale such as "pt_BR": try that exact
 	// translation, then the base language ("pt"), then fall back to English.
 	// French is the application's source language and needs no translation.
+	// A .qm compiled from an untranslated .ts (0% done) loads "successfully"
+	// but is empty: treat it as missing, so the user falls back to English
+	// instead of silently getting the French source strings.
 	const QString base_language = desired_language.section('_', 0, 0);
-	bool loaded = qetTranslator.load("qet_" + desired_language, languages_path);
+	auto loadQet = [this, &languages_path](const QString &name) {
+		return qetTranslator.load(name, languages_path)
+			&& !qetTranslator.isEmpty();
+	};
+	bool loaded = loadQet("qet_" + desired_language);
 	if (!loaded && base_language != desired_language)
-		loaded = qetTranslator.load("qet_" + base_language, languages_path);
+		loaded = loadQet("qet_" + base_language);
 	if (!loaded && base_language != "fr") {
 		// use of the English version by default
 		// utilisation de la version anglaise par defaut
-		if(!qetTranslator.load("qet_en", languages_path))
+		if(!loadQet("qet_en"))
 			qWarning() << "failed to load"
 					   << "qet_en" << languages_path << "(" << __FILE__
 					   << __LINE__ << __FUNCTION__ << ")";
@@ -1632,7 +1659,31 @@ void QETApp::receiveMessage(int instanceId, QByteArray message)
 	{
 		QString my_message(str.mid(20));
 		QStringList args_list = QET::splitWithSpaces(my_message);
-		openFiles(QETArguments(args_list));
+
+		// Deferred, not called directly.
+		//
+		// This slot runs inside SingleApplication's readyRead handling:
+		// SingleApplicationPrivate::slotDataAvailable() emits
+		// receivedMessage() synchronously from the socket's readyRead
+		// lambda. openFiles() then loads a project -- seconds of work on
+		// a large one -- and openAndAddProject() puts up a modal
+		// BackupDialog, whose exec() runs a nested event loop while the
+		// socket handler is still on the stack.
+		//
+		// During that nested loop the secondary instance exits, the
+		// connection closes and the QLocalSocket is deleted. When the
+		// dialog is dismissed and the stack unwinds, QMetaObject::
+		// activate() continues emitting on the freed sender and the
+		// process dies. Reported with a backtrace on PR #861;
+		// reproduced on Qt 6.10.2 by dismissing the dialog, which is the
+		// step that makes it fail -- leaving it open never unwinds.
+		//
+		// A zero-timer returns to the event loop first, so the socket
+		// stack is fully unwound before any of this runs.
+		const QETArguments deferred_args{args_list};
+		QTimer::singleShot(0, this, [this, deferred_args]() {
+			openFiles(deferred_args);
+		});
 	}
 }
 
