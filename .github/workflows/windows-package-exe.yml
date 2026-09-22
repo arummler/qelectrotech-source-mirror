@@ -100,7 +100,6 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/ucrt64 \
             -DQt6_DIR=/ucrt64/lib/cmake/Qt6 \
-            -DQT_VERSION_MAJOR=6 \
             -DBUILD_WITH_KF=ON \
             -DBUILD_KF=OFF \
             -DPACKAGE_TESTS=OFF \
