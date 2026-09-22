@@ -16,6 +16,9 @@
 	along with QElectroTech.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "cli_export.h"
+#ifdef QET_HAS_SCRIPTING
+#include "scripting/qetscripting.h"
+#endif
 #include "logging/eventloopwatchdog.h"
 #include "logging/qetlogger.h"
 #include "machine_info.h"
@@ -104,15 +107,8 @@ int main(int argc, char **argv)
 		QDomImplementation::ReturnNullNode);
 	//Creation and execution of the application
 	//HighDPI
-
-
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0) // ### Qt 6: remove
-	QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
-#endif
-
-
-qputenv("QT_ENABLE_HIGHDPI_SCALING", "1");
-QGuiApplication::setHighDpiScaleFactorRoundingPolicy(QetSettings::hdpiScaleFactorRoundingPolicy());
+	qputenv("QT_ENABLE_HIGHDPI_SCALING", "1");
+	QGuiApplication::setHighDpiScaleFactorRoundingPolicy(QetSettings::hdpiScaleFactorRoundingPolicy());
 
 
 	// Headless command-line export: render a project to PDF/PNG/SVG without
@@ -135,6 +131,17 @@ QGuiApplication::setHighDpiScaleFactorRoundingPolicy(QetSettings::hdpiScaleFacto
 			QET::QetMessageBox::setNonInteractive(true);
 			return CLIExport::run(export_app.arguments());
 		}
+#ifdef QET_HAS_SCRIPTING
+		// Headless scripting: --run <script.js> <project.qet> (bugtracker
+		// #162). Same reasoning as the export branch above for running
+		// before SingleApplication and answering message boxes headlessly.
+		if (QetScripting::isRunRequest(raw_args)) {
+			QApplication script_app(argc, argv);
+			QETProject::setBackupEnabled(false);
+			QET::QetMessageBox::setNonInteractive(true);
+			return QetScripting::run(script_app.arguments());
+		}
+#endif
 	}
 
 	// Resolve the logger's state (log directory, session filename, open

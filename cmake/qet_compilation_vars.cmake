@@ -16,12 +16,11 @@
 
 message(" - qet_compilation_vars")
 
-# Note: GuiPrivate is intentionally NOT in this list. Qt6's CMake config only
-# creates the Qt::GuiPrivate target when "GuiPrivate" is explicitly requested
-# as a component, but Qt5 has no Qt5GuiPrivate package at all (the target is
-# created implicitly with Gui), so requesting it as a component breaks the
-# whole Qt5 configure. It is requested separately, guarded by
-# QT_VERSION_MAJOR, after the main find_package.
+# Note: GuiPrivate is intentionally NOT in this list. 
+# Qt >= 6.7 ships it as a proper find_package component, but some distro
+# packages (e.g. Ubuntu's qt6-base-private-dev) omit Qt6GuiPrivateConfig.cmake
+# and only provide the implicit Qt6::GuiPrivate target created alongside
+# Qt6::Gui. Checks are done in the main CMakeLists.txt
 # (Needed for QPdfEngine::drawHyperlink, the PDF internal links.)
 set(QET_COMPONENTS
   LinguistTools
@@ -249,6 +248,12 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/qet.h
   ${QET_DIR}/sources/qeticons.cpp
   ${QET_DIR}/sources/qeticons.h
+  ${QET_DIR}/sources/palettegraphicsview.cpp
+  ${QET_DIR}/sources/palettegraphicsview.h
+  ${QET_DIR}/sources/qetpalette.cpp
+  ${QET_DIR}/sources/qetpalette.h
+  ${QET_DIR}/sources/qetstyle.cpp
+  ${QET_DIR}/sources/qetstyle.h
   ${QET_DIR}/sources/qetinformation.cpp
   ${QET_DIR}/sources/qetinformation.h
   ${QET_DIR}/sources/qetmainwindow.cpp
@@ -433,6 +438,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ElementsCollection/elementcollectionhandler.h
   ${QET_DIR}/sources/ElementsCollection/elementcollectionitem.cpp
   ${QET_DIR}/sources/ElementsCollection/elementcollectionitem.h
+  ${QET_DIR}/sources/ElementsCollection/elementpreviewdelegate.cpp
+  ${QET_DIR}/sources/ElementsCollection/elementpreviewdelegate.h
   ${QET_DIR}/sources/ElementsCollection/elementscollectionmodel.cpp
   ${QET_DIR}/sources/ElementsCollection/elementscollectionmodel.h
   ${QET_DIR}/sources/ElementsCollection/elementscollectionwidget.cpp
@@ -499,10 +506,6 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/PropertiesEditor/propertieseditordockwidget.h
   ${QET_DIR}/sources/PropertiesEditor/propertieseditorwidget.cpp
   ${QET_DIR}/sources/PropertiesEditor/propertieseditorwidget.h
-
-  ${QET_DIR}/pugixml/src/pugiconfig.hpp
-  ${QET_DIR}/pugixml/src/pugixml.cpp
-  ${QET_DIR}/pugixml/src/pugixml.hpp
 
   ${QET_DIR}/sources/qetgraphicsitem/conductor.cpp
   ${QET_DIR}/sources/qetgraphicsitem/conductor.h
@@ -698,6 +701,10 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ui/contactgroupselectiondialog.h
   ${QET_DIR}/sources/ui/conductorpropertiesdialog.cpp
   ${QET_DIR}/sources/ui/conductorpropertiesdialog.h
+  ${QET_DIR}/sources/ui/conductorcolortoolbutton.cpp
+  ${QET_DIR}/sources/ui/conductorcolortoolbutton.h
+  ${QET_DIR}/sources/ui/diagrambgcolorbutton.cpp
+  ${QET_DIR}/sources/ui/diagrambgcolorbutton.h
   ${QET_DIR}/sources/ui/conductorpropertieswidget.cpp
   ${QET_DIR}/sources/ui/conductorpropertieswidget.h
   ${QET_DIR}/sources/ui/configsaveloaderwidget.cpp
@@ -839,15 +846,26 @@ if(NOT BUILD_WITH_KF)
   )
 endif()
 
-# Qt6-only: PDF page import files
-if(QT_VERSION_MAJOR GREATER_EQUAL 6)
-  list(APPEND QET_SRC_FILES
+list(APPEND QET_SRC_FILES
     ${QET_DIR}/sources/diagramevent/diagrameventaddpdf.cpp
     ${QET_DIR}/sources/diagramevent/diagrameventaddpdf.h
     ${QET_DIR}/sources/ui/pdfpagesdialog.cpp
     ${QET_DIR}/sources/ui/pdfpagesdialog.h
-  )
-endif()
+)
+
+# JavaScript scripting (bugtracker #162). Unconditionally in the source
+# list, like the QtPdf files above: this file is included before the
+# QET_HAS_SCRIPTING probe runs in the top-level CMakeLists.txt, so the
+# variable isn't set yet here. Same pattern as QtPdf: always compiled, the
+# actual Qt::Qml dependent code is behind #ifdef QET_HAS_SCRIPTING inside
+# qetscripting.cpp/qetscriptapi.cpp themselves, compiling to a harmless
+# stub when the module wasn't found.
+list(APPEND QET_SRC_FILES
+  ${QET_DIR}/sources/scripting/qetscriptapi.cpp
+  ${QET_DIR}/sources/scripting/qetscriptapi.h
+  ${QET_DIR}/sources/scripting/qetscripting.cpp
+  ${QET_DIR}/sources/scripting/qetscripting.h
+)
 
 set(TS_FILES
   ${QET_DIR}/lang/qet_ar.ts

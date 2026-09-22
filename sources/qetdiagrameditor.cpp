@@ -16,12 +16,16 @@
 	along with QElectroTech.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "qetdiagrameditor.h"
+#ifdef QET_HAS_SCRIPTING
+#include "scripting/qetscripting.h"
+#endif
 #include <QCoreApplication>
 #include "ElementsCollection/elementscollectionwidget.h"
 #include "QWidgetAnimation/qwidgetanimation.h"
 #include "autoNum/ui/autonumberingdockwidget.h"
 #include "conductornumexport.h"
 #include "diagramcommands.h"
+#include "diagramcontent.h"
 #include "diagramevent/diagrameventaddimage.h"
 #ifdef QET_HAS_QTPDF
 #include "diagramevent/diagrameventaddpdf.h"
@@ -32,6 +36,7 @@
 #include "diagramevent/diagrameventaddpaste.h"
 #include "diagramview.h"
 #include "elementspanelwidget.h"
+#include "factory/elementpicturefactory.h"
 #include "factory/qetgraphicstablefactory.h"
 #include "print/projectprintwindow.h"
 #include "project/projectpropertieshandler.h"
@@ -45,6 +50,8 @@
 #include "recentfiles.h"
 #include "shortcutmanager.h"
 #include "ui/bomexportdialog.h"
+#include "ui/conductorcolortoolbutton.h"
+#include "ui/diagrambgcolorbutton.h"
 #include "ui/jumptoelementdialog.h"
 #include "ui/diagrampropertieseditordockwidget.h"
 #include "ui/backupdialog.h"
@@ -384,6 +391,13 @@ void QETDiagramEditor::setUpActions()
 		if (ProjectView *pv = currentProjectView())
 			pv->project()->setAutoConductor(ac);
 	});
+		//Registered with no default sequence on purpose. This is a
+		//setting some people toggle constantly and others never touch,
+		//so it earns a place in the Shortcuts page rather than a key of
+		//its own taken from the ones still free. Asked for on the forum
+		//(viewtopic.php?pid=23296): "est il possible dans les raccourcis
+		//d'ajouter un pour création automatique de conducteur ?"
+	ShortcutManager::instance().registerAction(m_auto_conductor, "diagrameditor.auto_conductor", tr("Éditeur de schémas"), QKeySequence());
 
 		//AutoBreakConductor
 	m_auto_break_conductor = new QAction   (QET::Icons::Conductor, tr("Coupure automatique de conducteur(s)","Tool tip of auto break conductor"), this);
@@ -400,15 +414,8 @@ void QETDiagramEditor::setUpActions()
 			pv->project()->setAutoBreakConductor(abc);
 	});
 
-		//Switch background color
-	m_grey_background = new QAction   (QET::Icons::DiagramBg, tr("Couleur de fond blanc/gris","Tool tip of white/grey background button"), this);
-	m_grey_background -> setStatusTip (tr("Affiche la couleur de fond du folio en blanc ou en gris", "Status tip of white/grey background button"));
-	m_grey_background -> setCheckable (true);
-	connect (m_grey_background, &QAction::triggered, [this](bool checked) {
-		Diagram::background_color = checked ? Qt::darkGray : Qt::white;
-		if (this->currentDiagramView() &&  this->currentDiagramView()->diagram())
-			this->currentDiagramView()->diagram()->update();
-	});
+		//Diagram background color picker
+	m_background_color_button = new DiagramBgColorToolButton(this, this);
 
 		//Draw or not the background grid
 	m_draw_grid = new QAction ( QET::Icons::Grid, tr("Afficher la grille"), this);
@@ -425,7 +432,7 @@ void QETDiagramEditor::setUpActions()
 	});
 
 	// Draw or not the custom guides
-	m_draw_guides = new QAction ( QIcon(":/ico/22x22/guides.png"), tr("Afficher les guides"), this);
+	m_draw_guides = new QAction ( QIcon::fromTheme("guides"), tr("Afficher les guides"), this);
 	m_draw_guides->setStatusTip(tr("Affiche ou masque les guides"));
 	m_draw_guides->setCheckable(true);
 	m_draw_guides->setChecked(settings.value("diagrameditor/guides_display_startup", false).toBool());
@@ -548,6 +555,22 @@ void QETDiagramEditor::setUpActions()
 	// Terminal Numbering
 	m_terminal_numbering = new QAction(QET::Icons::TerminalStrip, tr("Numérotation automatique des bornes"), this);
 	connect(m_terminal_numbering, &QAction::triggered, this, &QETDiagramEditor::slot_terminalNumbering);
+
+	// Reload element drawings from their current definition (bugtracker #802)
+	m_reload_element_drawings = new QAction(QET::Icons::ViewRefresh, tr("Recharger les dessins des éléments"), this);
+	m_reload_element_drawings->setStatusTip(
+		tr("Redessine chaque élément placé d'après sa définition actuelle,"
+		   " sans avoir à fermer et rouvrir le projet (action non annulable)"));
+	connect(m_reload_element_drawings, &QAction::triggered, this, &QETDiagramEditor::slot_reloadElementDrawings);
+
+#ifdef QET_HAS_SCRIPTING
+	// Run a JavaScript macro against the current project (bugtracker #162).
+	m_run_script = new QAction(tr("Exécuter un script..."), this);
+	m_run_script->setStatusTip(
+		tr("Exécute un script JavaScript sur le projet courant (voir qet.*"
+		   " dans le script pour l'API disponible)"));
+	connect(m_run_script, &QAction::triggered, this, &QETDiagramEditor::slot_runScript);
+#endif
 
 	#ifdef QET_EXPORT_PROJECT_DB
 		m_export_project_db = new QAction(QET::Icons::DocumentSpreadsheet, tr("Exporter la base de donnée interne du projet"), this);
@@ -883,7 +906,7 @@ void QETDiagramEditor::setUpToolBar()
 	view_tool_bar -> addSeparator();
 	view_tool_bar -> addAction(m_draw_grid);
 	view_tool_bar -> addAction(m_draw_guides);
-	view_tool_bar -> addAction (m_grey_background);
+	view_tool_bar -> addWidget(m_background_color_button);
 	view_tool_bar -> addSeparator();
 	view_tool_bar -> addActions(m_zoom_action_toolBar);
 
@@ -891,6 +914,10 @@ void QETDiagramEditor::setUpToolBar()
 	diagram_tool_bar -> addAction (m_conductor_reset);
 	diagram_tool_bar -> addAction (m_auto_conductor);
 	diagram_tool_bar -> addAction (m_auto_break_conductor);
+		//Sits with the conductor actions it works alongside: it colours
+		//the selected conductors and sets the colour of the next one drawn.
+	m_conductor_color_button = new ConductorColorToolButton(this, this);
+	diagram_tool_bar -> addWidget (m_conductor_color_button);
 
 	m_add_item_tool_bar = new QToolBar(tr("Ajouter"), this);
 	m_add_item_tool_bar->setObjectName("adding");
@@ -1002,6 +1029,10 @@ void QETDiagramEditor::setUpMenu()
 	menu_project -> addAction(m_project_export_wiring_list);
 	menu_project -> addAction(m_project_wiring_list_view);
 	menu_project -> addAction(m_terminal_numbering);
+	menu_project -> addAction(m_reload_element_drawings);
+#ifdef QET_HAS_SCRIPTING
+	menu_project -> addAction(m_run_script);
+#endif
 #ifdef QET_EXPORT_PROJECT_DB
 	menu_project -> addSeparator();
 	menu_project -> addAction(m_export_project_db);
@@ -1026,7 +1057,7 @@ void QETDiagramEditor::setUpMenu()
 	menu_affichage -> addSeparator();
 	menu_affichage -> addAction(m_draw_grid);
 	menu_affichage -> addAction(m_draw_guides);
-	menu_affichage -> addAction(m_grey_background);
+	menu_affichage -> addMenu(m_background_color_button->menu());
 	menu_affichage -> addSeparator();
 	menu_affichage -> addActions(m_zoom_actions_group.actions());
 
@@ -1729,6 +1760,10 @@ void QETDiagramEditor::addItemGroupTriggered(QAction *action)
 		// here makes the button's appearance match its actual state
 		// regardless of whether Qt's own change notification fired
 		// correctly.
+		
+		if (DiagramView *dv = currentDiagramView())
+			dv->setFocus();  // so the view (and the active tool) actually receives Escape etc
+
 		if (QWidget *button = m_add_item_tool_bar->widgetForAction(action))
 			button->update();
 	}
@@ -1839,7 +1874,7 @@ void QETDiagramEditor::slot_updateActions()
 	m_select_actions_group.         setEnabled(opened_diagram);
 	m_add_item_actions_group.       setEnabled(editable_project);
 	m_row_column_actions_group.     setEnabled(editable_project);
-	m_grey_background->             setEnabled(opened_diagram);
+	m_background_color_button->    setEnabled(opened_diagram);
 	m_draw_grid->                   setEnabled(opened_diagram);
 	m_draw_guides->                 setEnabled(opened_diagram);
 
@@ -1856,6 +1891,10 @@ void QETDiagramEditor::slot_updateActions()
 	m_project_export_wiring_list  -> setEnabled(opened_project);
 	m_project_wiring_list_view    -> setEnabled(opened_project);
 	m_terminal_numbering          -> setEnabled(editable_project);
+	m_reload_element_drawings     -> setEnabled(opened_project);
+#ifdef QET_HAS_SCRIPTING
+	m_run_script                  -> setEnabled(opened_project);
+#endif
 #ifdef QET_EXPORT_PROJECT_DB
 	m_export_project_db           -> setEnabled(editable_project);
 #endif
@@ -2076,6 +2115,10 @@ void QETDiagramEditor::slot_updateModeActions()
 	{
 		m_auto_conductor -> setDisabled(true);
 		m_auto_break_conductor -> setDisabled(true);
+	}
+
+	if (m_conductor_color_button) {
+		m_conductor_color_button->updateEnabledState();
 	}
 }
 
@@ -2807,7 +2850,7 @@ void QETDiagramEditor::updateWindowModifiedState()
 		setWindowTitle(QString("%1[*] - %2").arg(
 			project->pathNameTitle(),
 			tr("QElectroTech", "window title")));
-		setWindowModified(project->projectOptionsWereModified());
+		setWindowModified(project->projectWasModified());
 	} else {
 		setWindowTitle(tr("QElectroTech", "window title"));
 		setWindowModified(false);
@@ -2970,3 +3013,123 @@ void QETDiagramEditor::slot_terminalNumbering() {
 		}
 	}
 }
+
+/**
+	@brief QETDiagramEditor::slot_reloadElementDrawings
+	Redraw every placed element of the current project from its current
+	definition (bugtracker #802): a symbol edited and saved after being
+	placed keeps showing its old drawing otherwise, until the whole project
+	is closed and reopened.
+
+	Purely visual and not undoable, the way pressing a "refresh" button
+	would be: nothing is pushed on the undo stack and the project is not
+	marked as modified. Elements whose size, hotspot or terminals changed
+	are skipped and listed: they must be removed and re-inserted, which
+	deletes the conductors already connected to them.
+*/
+void QETDiagramEditor::slot_reloadElementDrawings() {
+	QETProject *project = currentProject();
+	if (!project) return;
+
+	QList<Element *> elements;
+	QSet<QString> dropped_locations;
+	for (Diagram *diagram : project->diagrams())
+	{
+		DiagramContent content(diagram, false);
+		for (Element *elmt : content.m_elements)
+		{
+			elements << elmt;
+			const QString key = elmt->location().toString();
+			if (!dropped_locations.contains(key))
+			{
+				ElementPictureFactory::instance()->dropCache(elmt->location());
+				dropped_locations.insert(key);
+			}
+		}
+	}
+
+	int reloaded = 0;
+	int unavailable = 0;
+	QStringList geometry_changed;
+	for (Element *elmt : elements)
+	{
+		switch (elmt->reloadPicture())
+		{
+			case Element::ReloadPictureResult::Reloaded:
+				++reloaded;
+				break;
+			case Element::ReloadPictureResult::Unavailable:
+				++unavailable;
+				break;
+			case Element::ReloadPictureResult::GeometryChanged:
+			{
+				const Diagram *diagram = elmt->diagram();
+				const QString folio = diagram
+						? tr("folio %1").arg(project->folioIndex(diagram) + 1)
+						: QString();
+				geometry_changed << QStringLiteral("%1 (%2)").arg(elmt->name(), folio);
+				break;
+			}
+		}
+	}
+
+	QString message = tr("%n élément(s) redessiné(s).", "", reloaded);
+
+	if (unavailable) {
+		message += QStringLiteral("\n\n")
+				% tr("%n élément(s) dont la définition est introuvable ou illisible :"
+					  " leur dessin actuel a été conservé.", "", unavailable);
+	}
+
+	if (geometry_changed.isEmpty())
+	{
+		QET::QetMessageBox::information(
+			this, tr("Recharger les dessins des éléments"), message);
+		return;
+	}
+
+	message += QStringLiteral("\n\n")
+			% tr("%n élément(s) non redessiné(s) : leur taille, leur point de saisie"
+				  " ou leurs bornes ont changé (borne ajoutée, supprimée ou déplacée).",
+				  "", geometry_changed.size())
+			% QStringLiteral("\n\n")
+			% tr("Pour les mettre à jour, il faut les supprimer puis les réinsérer."
+				  " Attention : cette opération supprime les conducteurs déjà reliés"
+				  " à ces éléments, qu'il faudra retracer.");
+
+		//The full list goes in the expandable, scrollable details area
+		//so the dialog stays readable on large projects.
+	QMessageBox box(QMessageBox::Warning,
+					tr("Recharger les dessins des éléments"),
+					message,
+					QMessageBox::Ok,
+					this);
+	box.setDetailedText(geometry_changed.join(QLatin1Char('\n')));
+	box.exec();
+}
+
+#ifdef QET_HAS_SCRIPTING
+/**
+	@brief QETDiagramEditor::slot_runScript
+	Run a JavaScript macro against the current project (bugtracker #162).
+	See QetScriptApi for what a script can do -- read-mostly: folio/element/
+	conductor counts and the same export operations the --export-* CLI
+	flags provide. Export/save calls inside the script act on this
+	project's file on disk, so unsaved edits in the open editor are not
+	visible to the script; save first if that matters.
+*/
+void QETDiagramEditor::slot_runScript() {
+	QETProject *project = currentProject();
+	if (!project) return;
+
+	const QString script_path = QFileDialog::getOpenFileName(
+		this,
+		tr("Exécuter un script"),
+		QString(),
+		tr("Scripts JavaScript (*.js);;Tous les fichiers (*)")
+	);
+	if (script_path.isEmpty()) return;
+
+	QetScripting::runOnProject(script_path, project, currentDiagramView());
+}
+#endif

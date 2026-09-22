@@ -23,6 +23,8 @@
 #include "../qetdiagrameditor.h"
 #include "../qetgraphicsitem/conductor.h"
 
+#include <QSettings>
+
 #include <QApplication>
 #include <QClipboard>
 #include <QGraphicsSceneMouseEvent>
@@ -35,7 +37,7 @@
 	@param start_pos : where the pasted items first appear, in scene
 	coordinates -- normally the cursor
 */
-DiagramEventAddPaste::DiagramEventAddPaste(Diagram *diagram, const QPointF &start_pos) :
+	DiagramEventAddPaste::DiagramEventAddPaste(Diagram *diagram, const QPointF &start_pos) :
 	DiagramEventInterface(diagram)
 {
 		//DiagramEventInterface::init() is called by Diagram::setEventInterface
@@ -49,20 +51,69 @@ DiagramEventAddPaste::DiagramEventAddPaste(Diagram *diagram, const QPointF &star
 	QDomDocument document_xml;
 	if (!document_xml.setContent(clipboard_text)) return;
 
-	m_diagram->fromXml(document_xml, Diagram::snapToGrid(start_pos), false, &m_content);
+		//Load items at their original XML coordinates.
+	m_diagram->fromXml(document_xml, QPointF(), false, &m_content);
 	if (!m_content.count()) return;
 
-		//Remember where each item sits relative to the group's top left, so a
-		//move is one assignment per item rather than an accumulated delta.
-	QRectF group_rect;
 	const QList<QGraphicsItem *> movable = m_content.items(MovableItems);
+	if (movable.isEmpty()) return;
+
+		//Compute the top-left of all items' positions (not bounding
+		//rects) and snap to grid: this is the point that gets placed
+		//under the cursor, and the baseline moveTo() measures from.
+	QPointF top_left;
+	bool first = true;
 	for (auto *item : movable) {
-		group_rect = group_rect.united(item->mapToScene(item->boundingRect()).boundingRect());
+		const QPointF p = item->pos();
+		if (first) {
+			top_left = p;
+			first = false;
+		} else {
+			if (p.x() < top_left.x()) top_left.setX(p.x());
+			if (p.y() < top_left.y()) top_left.setY(p.y());
+		}
 	}
-	const QPointF top_left = group_rect.topLeft();
+	QSettings settings;
+	const int xGrid = settings.value(QStringLiteral("diagrameditor/Xgrid"),
+					  Diagram::xGrid).toInt();
+	const int yGrid = settings.value(QStringLiteral("diagrameditor/Ygrid"),
+					  Diagram::yGrid).toInt();
+	const auto snapGrid = [xGrid, yGrid](const QPointF &p) -> QPointF {
+		return QPointF(
+			qRound(p.x() / xGrid) * xGrid,
+			qRound(p.y() / yGrid) * yGrid);
+	};
+	const QPointF grid_origin = snapGrid(top_left);
+
+		//Move the group to the cursor, rather than the cursor to the
+		//group. Both put the copy under the pointer, but warping the
+		//pointer also drags it back to the original's position, so the
+		//copy appears exactly on top of what was copied until the mouse
+		//is moved -- which is the thing pasting under the cursor was
+		//meant to avoid (issue #913). Taking the pointer away from
+		//where the user put it is also its own surprise.
+	m_group_origin = snapGrid(start_pos);
+	const QPointF offset = m_group_origin - grid_origin;
+
+		//Store each item's position after the move. moveTo() applies a
+		//grid-snapped delta from the baseline to these, so items
+		//preserve their layout and move in whole grid steps.
 	for (auto *item : movable) {
-		m_relative_pos.insert(item, item->pos() - top_left);
+		item->setPos(item->pos() + offset);
+		m_relative_pos.insert(item, item->pos());
 	}
+
+		//The conductors were laid out against the old terminal
+		//positions, so re-route them before anything is drawn.
+	const QList<Conductor *> conductors = m_content.conductors(DiagramContent::AnyConductor);
+	for (auto *conductor : conductors) {
+		conductor->updatePath();
+	}
+
+		//The baseline is known now, so moveTo() does not have to
+		//capture one from the first mouse movement.
+	m_initial_cursor = m_group_origin;
+	m_baseline_captured = true;
 
 	m_diagram->clearSelection();
 	for (auto *item : movable) {
@@ -70,8 +121,10 @@ DiagramEventAddPaste::DiagramEventAddPaste(Diagram *diagram, const QPointF &star
 	}
 
 	if (!m_diagram->views().isEmpty()) {
-		if (const auto qde = QETApp::diagramEditorAncestorOf(m_diagram->views().at(0))) {
-			m_status_bar = qde->statusBar();
+		if (auto *view = m_diagram->views().at(0)) {
+			if (const auto qde = QETApp::diagramEditorAncestorOf(view)) {
+				m_status_bar = qde->statusBar();
+			}
 		}
 	}
 	showHint();
@@ -88,10 +141,26 @@ DiagramEventAddPaste::DiagramEventAddPaste(Diagram *diagram, const QPointF &star
 DiagramEventAddPaste::~DiagramEventAddPaste()
 {
 	if (!m_finished && m_diagram) {
-		cancel();
+		removeItems();
+		m_finished = true;
+		m_running = false;
 	}
 	if (m_status_bar) {
 		m_status_bar->clearMessage();
+	}
+
+		//Give the context menu back. init() turned it off so a right
+		//click would cancel the placement instead of opening a menu over
+		//it, and nothing turned it on again: one Ctrl+V left the folio's
+		//right-click menu dead for the rest of the session, taking
+		//"Coller ici", "Collage multiple" and the folio properties with
+		//it. Every other DiagramEvent* class restores it here; this one
+		//did not.
+	if (m_diagram) {
+		const auto views = m_diagram->views();
+		for (auto *view : views) {
+			view->setContextMenuPolicy(Qt::DefaultContextMenu);
+		}
 	}
 }
 
@@ -129,15 +198,50 @@ void DiagramEventAddPaste::showHint()
 
 /**
 	@brief DiagramEventAddPaste::moveTo
-	Put the group's top left corner at @a scene_pos, snapped to the grid.
+	Compute a grid-snapped delta from the initial cursor position and
+	apply it to every item's stored position.  Working from a delta
+	against a fixed baseline, rather than from the previous position,
+	keeps all items exactly on grid points regardless of modifier keys
+	and stops rounding accumulating over a long drag.
 */
 void DiagramEventAddPaste::moveTo(const QPointF &scene_pos)
 {
-	const QPointF anchor = Diagram::snapToGrid(scene_pos);
+	QSettings settings;
+	const int xGrid = settings.value(QStringLiteral("diagrameditor/Xgrid"),
+					  Diagram::xGrid).toInt();
+	const int yGrid = settings.value(QStringLiteral("diagrameditor/Ygrid"),
+					  Diagram::yGrid).toInt();
+
+	const auto snapGrid = [xGrid, yGrid](const QPointF &p) -> QPointF {
+		return QPointF(
+			qRound(p.x() / xGrid) * xGrid,
+			qRound(p.y() / yGrid) * yGrid);
+	};
+
+		//The constructor normally sets the baseline, having just put the
+		//group there. This covers the case where it could not -- no view
+		//to map through -- by taking the first cursor position instead.
+		//Tested with m_baseline_captured rather than
+		//m_initial_cursor.isNull(), which silently re-baselines when the
+		//baseline is legitimately scene (0,0).
+	if (!m_baseline_captured) {
+		m_initial_cursor = snapGrid(scene_pos);
+		m_baseline_captured = true;
+		return;
+	}
+
+	const QPointF delta = snapGrid(scene_pos) - m_initial_cursor;
+
 	for (auto it = m_relative_pos.constBegin() ; it != m_relative_pos.constEnd() ; ++it) {
 		if (it.key()) {
-			it.key()->setPos(anchor + it.value());
+			it.key()->setPos(it.value() + delta);
 		}
+	}
+
+		//Update conductor paths so they follow the moved terminals.
+	const QList<Conductor *> conductors = m_content.conductors(DiagramContent::AnyConductor);
+	for (auto *conductor : conductors) {
+		conductor->updatePath();
 	}
 }
 
@@ -160,13 +264,12 @@ void DiagramEventAddPaste::mouseReleaseEvent(QGraphicsSceneMouseEvent *event)
 {
 	if (!m_running) return;
 
+	event->setAccepted(true);
 	if (event->button() == Qt::LeftButton) {
-		moveTo(event->scenePos());
 		commit();
 	} else if (event->button() == Qt::RightButton) {
 		cancel();
 	}
-	event->setAccepted(true);
 }
 
 void DiagramEventAddPaste::keyPressEvent(QKeyEvent *event)
@@ -175,15 +278,15 @@ void DiagramEventAddPaste::keyPressEvent(QKeyEvent *event)
 
 	switch (event->key()) {
 		case Qt::Key_Escape:
-			cancel();
 			event->setAccepted(true);
+			cancel();
 			break;
 			//Return and Enter drop the paste where it stands, so the whole
 			//operation can be completed without a mouse.
 		case Qt::Key_Return:
 		case Qt::Key_Enter:
-			commit();
 			event->setAccepted(true);
+			commit();
 			break;
 		default:
 			break;
@@ -216,13 +319,14 @@ void DiagramEventAddPaste::commit()
 void DiagramEventAddPaste::cancel()
 {
 	if (m_finished || !m_diagram) return;
+	removeItems();
 	m_finished = true;
 	m_running = false;
+	emit finish();  // only the user-driven path signals
+}
 
-		//Conductors first: they hold pointers to the terminals of the
-		//elements below, so removing an element out from under one would
-		//leave it pointing at freed memory for as long as it is still in the
-		//scene.
+void DiagramEventAddPaste::removeItems()
+{
 	const QList<Conductor *> conductors = m_content.conductors(DiagramContent::AnyConductor);
 	for (auto *conductor : conductors) {
 		m_diagram->removeItem(conductor);
@@ -237,5 +341,4 @@ void DiagramEventAddPaste::cancel()
 
 	m_content.clear();
 	m_relative_pos.clear();
-	emit finish();
 }

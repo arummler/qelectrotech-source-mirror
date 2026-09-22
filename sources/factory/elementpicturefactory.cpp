@@ -95,6 +95,29 @@ void ElementPictureFactory::getPictures(const ElementsLocation &location, QPictu
 }
 
 /**
+	@brief ElementPictureFactory::dropCache
+	Forget the cached drawing of the element at @p location, so the next
+	getPictures()/pixmap()/getPrimitives() call rebuilds it from the
+	definition's current content instead of returning what was cached the
+	first time this location was drawn.
+
+	A placed Element keeps its own copy of the picture in m_picture /
+	m_low_zoom_picture (set once, in buildFromXml()), so dropping the shared
+	cache here does not by itself change what is on screen -- callers doing
+	a manual refresh (bugtracker #802) still need each Element to re-fetch
+	its picture afterwards.
+	@param location
+*/
+void ElementPictureFactory::dropCache(const ElementsLocation &location)
+{
+	const QUuid uuid = cacheKey(location);
+	m_pictures_H.remove(uuid);
+	m_low_pictures_H.remove(uuid);
+	m_pixmap_H.remove(uuid);
+	m_primitives_H.remove(uuid);
+}
+
+/**
 	@brief ElementPictureFactory::pixmap
 	@param location
 	@return the pixmap of the element at location
@@ -123,12 +146,13 @@ QPixmap ElementPictureFactory::pixmap(const ElementsLocation &location)
 		QPixmap pix(w, h);
 			//Element definitions almost always draw with a hardcoded black
 			//stroke color, on the assumption of the white diagram sheet they
-			//are normally placed on. A transparent background here makes
-			//that stroke disappear against a dark widget/tree-view background
-			//(bugtracker #335). Give it an opaque white background instead -
-			//exactly what the element already assumes visually, in every
-			//context this pixmap is used (tree icons, drag icon, previews).
-		pix.fill(Qt::white);
+			//are normally placed on. The pixmap is kept as drawn, on a
+			//transparent background: the places that show it (the
+			//collection tree through ElementPreviewDelegate, the drag icon)
+			//adapt it to the palette with QET::Palette::forPalette(), so a
+			//dark palette gets light ink instead of black on black
+			//(bugtracker #335).
+		pix.fill(Qt::transparent);
 
 		QPainter painter(&pix);
 		painter.setRenderHint(QPainter::Antialiasing, true);

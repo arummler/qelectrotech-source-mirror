@@ -34,13 +34,6 @@
 // Availability of Qt::GuiPrivate is verified at configure time in CMakeLists.txt.
 #include <private/qpdf_p.h>
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0) // ### Qt 6: remove
-#	include <QDesktopWidget>
-#else
-#	if TODO_LIST
-#		pragma message("@TODO remove code for QT 6 or later")
-#	endif
-#endif
 #include <QMarginsF>
 #include <QPageSetupDialog>
 #include <QPainter>
@@ -63,7 +56,6 @@
 void ProjectPrintWindow::launchDialog(QETProject *project, QPrinter::OutputFormat format, QWidget *parent)
 {
 	auto printer_ = new QPrinter();
-	QPrinter printer(QPrinter::HighResolution);
 	printer_->setDocName(ProjectPrintWindow::docName(project));
 	printer_->setPageOrientation(QPageLayout::Landscape);
 
@@ -74,14 +66,7 @@ void ProjectPrintWindow::launchDialog(QETProject *project, QPrinter::OutputForma
 		print_dialog.setWindowFlags(Qt::Sheet);
 #endif
 		print_dialog.setWindowTitle(tr("Options d'impression", "window title"));
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)	// ### Qt 6: remove
-		print_dialog.setEnabledOptions(QAbstractPrintDialog::PrintShowPageSize);
-#else
-#if TODO_LIST
-#pragma message("@TODO remove code for QT 6 or later")
-#endif
-		qDebug()<<"Help code for QT 6 or later";
-#endif
+		print_dialog.setOption(QAbstractPrintDialog::PrintShowPageSize, true);
 		if (print_dialog.exec() == QDialog::Rejected) {
 			delete  printer_;
 			return;
@@ -164,6 +149,11 @@ ProjectPrintWindow::ProjectPrintWindow(QETProject *project, QPrinter *printer, Q
 	ui->m_draw_terminal_names_cb->setChecked(exp.draw_terminal_names);
 	ui->m_keep_conductor_color_cb->setChecked(exp.draw_colored_conductors);
 
+	QSettings settings;
+	ui->m_component_info_cb->setChecked(settings.value("print/default/componentinfo", false).toBool());
+	ui->m_fit_in_page_cb->setChecked(settings.value("print/default/fitinpage", true).toBool());
+	ui->m_use_full_page_cb->setChecked(settings.value("print/default/fullpage", false).toBool());
+
 	ui->m_date_cb->blockSignals(true);
 	ui->m_date_cb->setDate(QDate::currentDate());
 	ui->m_date_cb->blockSignals(false);
@@ -204,17 +194,10 @@ void ProjectPrintWindow::requestPaint()
 			#ifdef QT_DEBUG
 			qDebug() << "--";
 			qDebug() << "DiagramPrintDialog::print  printer_->resolution() before " << m_printer->resolution();
-			#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-			qDebug() << "DiagramPrintDialog::print  screennumber " << QApplication::desktop()->screenNumber();
-			#endif
+			qDebug() << "DiagramPrintDialog::print  screen " << screen()->name();
 			#endif
 
-			// QApplication::desktop() was removed in Qt6; use QWidget::screen().
-			#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-			QScreen *srn = QApplication::screens().at(QApplication::desktop()->screenNumber());
-			#else
 			QScreen *srn = screen();
-			#endif
 			qreal dotsPerInch = (qreal)srn->logicalDotsPerInch();
 			m_printer->setResolution(dotsPerInch);
 
@@ -678,6 +661,16 @@ void ProjectPrintWindow::loadPageSetupForCurrentPrinter()
 	settings.endGroup();
 }
 
+void ProjectPrintWindow::savePrintProperties()
+{
+	QSettings settings;
+	exportProperties().toSettings(settings, "print/default");
+	settings.setValue("print/default/componentinfo", ui->m_component_info_cb->isChecked());
+	settings.setValue("print/default/fitinpage", ui->m_fit_in_page_cb->isChecked());
+	settings.setValue("print/default/fullpage", ui->m_use_full_page_cb->isChecked());
+	settings.sync();
+}
+
 void ProjectPrintWindow::savePageSetupForCurrentPrinter()
 {
 	QSettings settings;
@@ -863,6 +856,7 @@ void ProjectPrintWindow::print()
 	                      // is created/destroyed inside that call
 
 	savePageSetupForCurrentPrinter();
+	savePrintProperties();
 
 	if (isPdf && !pdfFile.isEmpty()) {
 		// Defer post-processing and window close to the next event-loop

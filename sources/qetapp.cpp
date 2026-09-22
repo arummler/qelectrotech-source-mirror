@@ -18,6 +18,7 @@
 #include "qetapp.h"
 
 #include "configdialog.h"
+#include "qet.h"
 #include "ui/configpage/configpages.h"
 #include "editor/ui/qetelementeditor.h"
 #include "elementscollectioncache.h"
@@ -26,6 +27,8 @@
 #include "projectview.h"
 #include "qetdiagrameditor.h"
 #include "qeticons.h"
+#include "qetpalette.h"
+#include "qetstyle.h"
 #include "utils/qetutils.h"
 #include "qetmessagebox.h"
 #include "qetproject.h"
@@ -50,6 +53,8 @@
 #include <QFontDatabase>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QStyleFactory>
+#include <QStyleHints>
 #ifdef BUILD_WITHOUT_KF
 #	include "ui/nokde/kautosavefile.h"
 #else
@@ -118,9 +123,11 @@ QETApp::QETApp() :
 	}
 	initConfiguration();
 	initLanguage();
+	initIconTheme();
 	QET::Icons::initIcons();
 	initFonts();
 	initStyle();
+	QET::loadCustomColors();
 	initSplashScreen();
 	initSystemTray();
 
@@ -165,6 +172,7 @@ QETApp::QETApp() :
 */
 QETApp::~QETApp()
 {
+	QET::saveCustomColors();
 	m_elements_recent_files->save();
 	m_projects_recent_files->save();
 
@@ -227,16 +235,11 @@ QString QETApp::loadedQtTranslationFile()
 */
 void QETApp::setLanguage(const QString &desired_language) {
 	QString languages_path = languagesPath();
+	
+	QLocale::setDefault(QLocale(desired_language));
 
 	// load Qt library translations
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)	// ### Qt 6: remove
-	QString qt_l10n_path = QLibraryInfo::location(QLibraryInfo::TranslationsPath);
-#else
-#if TODO_LIST
-#pragma message("@TODO remove code for QT 6 or later")
-#endif
 	QString qt_l10n_path = QLibraryInfo::path(QLibraryInfo::TranslationsPath);
-#endif
 	if (!qtTranslator.load("qt_" + desired_language, qt_l10n_path))
 	{
 		qWarning() << "failed to load"
@@ -1786,8 +1789,10 @@ void QETApp::invertMainWindowVisibility(QWidget *window) {
 	false pour utiliser celles du theme en cours
 */
 void QETApp::useSystemPalette(bool use) {
+	// The base palette is always initial_palette_ (see initStyle()); the
+	// setting only decides whether the user's style.css is layered on top.
+	qApp->setPalette(initial_palette_);
 	if (use) {
-		qApp->setPalette(initial_palette_);
 		// Drop any stylesheet previously loaded from style.css: with system
 		// colors requested, the palette set just above is what provides them.
 		//
@@ -1805,6 +1810,10 @@ void QETApp::useSystemPalette(bool use) {
 			file.close();
 		}
 	}
+	// Widgets with their own style sheet keep the palette they were
+	// polished with; after a live light/dark switch they would stay in
+	// the old colors (see QET::Palette::refreshStyleSheets).
+	QET::Palette::refreshStyleSheets();
 }
 
 /**
@@ -2334,16 +2343,87 @@ void QETApp::initFonts()
 }
 
 /**
+	@brief QETApp::initIconTheme
+	Register QET's two icon themes ("qet" and "qet-dark", see
+	misc/make_icon_themes.py and ico/icon-themes.qrc) and pick the one
+	matching the current palette. Must run before QET::Icons::initIcons(),
+	which looks icons up by name.
+*/
+void QETApp::initIconTheme()
+{
+	QStringList paths = QIcon::themeSearchPaths();
+	paths.prepend(QStringLiteral(":/ico/themes"));
+	QIcon::setThemeSearchPaths(paths);
+	applyIconTheme(qApp->palette());
+}
+
+/**
+	@brief QETApp::applyIconTheme
+	Select "qet-dark" for a dark palette, "qet" otherwise. Icons created
+	with QIcon::fromTheme() re-resolve on their next paint, so this can be
+	called again whenever the palette changes.
+*/
+void QETApp::applyIconTheme(const QPalette &palette)
+{
+	QIcon::setThemeName(QET::Palette::isDark(palette)
+	                    ? QStringLiteral("qet-dark")
+	                    : QStringLiteral("qet"));
+}
+
+/**
 	@brief QETApp::initStyle
 	Setup the gui style
 */
 void QETApp::initStyle()
 {
+	// Wrap the running style so icons get a hover state (see qetstyle.h).
+	// The proxy keeps the base style's object name, so the Fusion checks
+	// below still see "fusion".
+	if (!qobject_cast<QETStyle *>(qApp->style()))
+		qApp->setStyle(new QETStyle(QStyleFactory::create(qApp->style()->objectName())));
+
 	initial_palette_ = qApp->palette();
+
+#ifdef Q_OS_MACOS
+	// main.cpp forces the Fusion style on macOS, but the palette Qt hands
+	// us there is the one its platform theme builds for the native style:
+	// Window, Button and Base share one color, and in dark mode the
+	// Inactive ButtonText is black. Fusion draws its frames, gradients and
+	// combo box text from those roles, so controls lose their edges and
+	// combo text goes black once the window loses focus. Replace it with a
+	// palette laid out the way Fusion expects (see qetpalette.h).
+	//
+	// macOS only: on Linux, Fusion is Qt's default style on desktops
+	// without a platform theme, and the palette there carries the user's
+	// desktop colors, which must stay in effect. Making Fusion and this
+	// palette the default everywhere is discussed in #870.
+	if (QET::Palette::styleIsFusion(qApp->style()))
+		initial_palette_ = QET::Palette::forFusion(initial_palette_);
+#endif
+	applyIconTheme(initial_palette_);
 
 	//Apply or not the system style
 	QSettings settings;
 	useSystemPalette(settings.value("usesystemcolors", true).toBool());
+
+#if defined(Q_OS_MACOS) && QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+	// Setting an application palette stops Qt from following the OS
+	// light/dark switch on its own, so follow it here. The platform accent
+	// color is not reachable any more at this point; the palette's own
+	// selection blue is used instead.
+	connect(qApp->styleHints(), &QStyleHints::colorSchemeChanged, this,
+	        [this](Qt::ColorScheme scheme)
+	{
+		if (!QET::Palette::styleIsFusion(qApp->style()))
+			return;
+		initial_palette_ = scheme == Qt::ColorScheme::Dark
+		                   ? QET::Palette::fusionDark()
+		                   : QET::Palette::fusionLight();
+		applyIconTheme(initial_palette_);
+		QSettings settings;
+		useSystemPalette(settings.value("usesystemcolors", true).toBool());
+	});
+#endif
 }
 
 /**
@@ -2628,14 +2708,28 @@ void QETApp::checkBackupFiles()
 		}
 	}
 
-	if (stale_files.isEmpty()) {
-		// Only offer an unretrieved crash dump when there's no project
-		// to recover this run -- discussion #644 step 5 is explicit
-		// that the two prompts must never both show at once.
-		checkCrashDump();
-		return;
+	if (!stale_files.isEmpty()) {
+		offerBackupFiles(stale_files);
 	}
 
+	// Discussion #644 step 5 asks that the recovery prompt and the crash
+	// report never show at the same time -- not that the report be dropped
+	// whenever there is something to recover. Offering it here, once the
+	// recovery prompt has been answered, keeps the two sequential without
+	// losing the report after the most common crash there is: one with a
+	// project open, which always leaves a stale file behind, so the report
+	// was unreachable in exactly the case it is most wanted (issue #901).
+	checkCrashDump();
+}
+
+/**
+	@brief QETApp::offerBackupFiles
+	Ask whether to reopen the recovery files left by a previous run, and
+	open or discard them accordingly.
+	@param stale_files : the recovery files to offer
+*/
+void QETApp::offerBackupFiles(const QList<KAutoSaveFile *> &stale_files)
+{
 	QString text;
 	if(stale_files.size() == 1) {
 		text.append(tr("<b>Le fichier de restauration suivant a été trouvé,<br>"
@@ -2696,11 +2790,16 @@ void QETApp::checkBackupFiles()
 void QETApp::checkCrashDump()
 {
 	QetLogger &logger = QetLogger::instance();
-	if (!logger.hasPendingCrashDump()) {
+
+	// Listed once, then used both to build the contents and to delete
+	// below. Re-listing after the dialog closes would delete a dump
+	// written while it was open, unseen -- see clearPendingCrashDump().
+	const QStringList offered = logger.pendingCrashDumpFiles();
+	if (offered.isEmpty()) {
 		return;
 	}
 
-	const QByteArray content = logger.pendingCrashDumpContents();
+	const QByteArray content = logger.pendingCrashDumpContents(offered);
 
 	DiagnosticsReportDialog dialog(
 			tr("Rapport de plantage"),
@@ -2712,7 +2811,7 @@ void QETApp::checkCrashDump()
 
 	// Offered once, then marked retrieved -- regardless of whether the
 	// user chose to save it -- so it is never offered a second time.
-	logger.clearPendingCrashDump();
+	logger.clearPendingCrashDump(offered);
 }
 
 /**

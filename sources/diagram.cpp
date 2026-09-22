@@ -26,6 +26,7 @@
 #include "diagramposition.h"
 #include "factory/elementfactory.h"
 #include "qetapp.h"
+#include "qetpalette.h"
 #include "qetgraphicsitem/ViewItem/qetgraphicstableitem.h"
 #include "qetgraphicsitem/conductor.h"
 #include "qetgraphicsitem/conductortextitem.h"
@@ -283,10 +284,11 @@ void Diagram::drawBackground(QPainter *p, const QRectF &r) {
 			 * if background color is black,
 			 * then grid spots shall be white,
 			 * else they shall be black in color.
+			 * A view that shows the sheet with its lightness inverted
+			 * gets softer dots, see QET::Palette::gridDotColor.
 			 */
 		QPen pen;
-		Diagram::background_color == Qt::black? pen.setColor(Qt::white)
-							  : pen.setColor(Qt::black);
+		pen.setColor(QET::Palette::gridDotColor(Diagram::background_color, m_inverted_lightness));
 		pen.setCosmetic(true);
 		p->setPen(pen);
 
@@ -692,6 +694,79 @@ QUuid Diagram::uuid()
 }
 
 /**
+	@brief Diagram::uuidUsedByOtherDiagram
+	A hand-edited or merged project file can contain two folios with the same
+	uuid. The uuid is used as a key (e.g. in the project database), so the
+	second one must get another one.
+	@param uuid
+	@return true if another diagram of the parent project already uses @p uuid
+*/
+bool Diagram::uuidUsedByOtherDiagram(const QUuid &uuid) const
+{
+	if (!m_project) {
+		return false;
+	}
+	const auto diagrams = m_project->diagrams();
+	for (const Diagram *diagram : diagrams) {
+		if (diagram != this && diagram->m_uuid == uuid) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+	@brief Diagram::derivedUuid
+	Name-based (version 5) uuid for a folio that has no usable uuid in the
+	file it is loaded from : either the file predates the uuid attribute, or
+	the uuid it carries is already taken by another folio of the project.
+
+	A random uuid would do as an identity, but it would make saving an
+	unmodified legacy project non-reproducible : every load would invent a
+	different one and write it out (see #754). The name is therefore built
+	only from data read from the file itself -- the project title, the
+	position of the folio in the file and its title -- so the same input file
+	always yields the same uuid. It is computed once, when the folio is
+	loaded, and saved from then on : renaming or moving the folio later does
+	not change it.
+
+	@param root : the <diagram> element being loaded
+	@param reason : distinguishes the two cases above, so that they can not
+	produce the same name
+	@return a uuid not used by any other diagram of the project
+*/
+QUuid Diagram::derivedUuid(const QDomElement &root, const QString &reason) const
+{
+		//Fixed namespace for QElectroTech folio uuids, never change it :
+		//doing so would change the uuid given to every legacy folio.
+	static const QUuid folio_namespace(
+				QStringLiteral("{d5951240-154d-44d6-8277-0092a31d1920}"));
+
+	const int index = m_project
+			? m_project->diagrams().indexOf(const_cast<Diagram *>(this))
+			: -1;
+	const QString project_title = root.ownerDocument()
+			.documentElement()
+			.attribute(QStringLiteral("title"));
+
+	const QString base = QStringLiteral("qet-folio\n%1\n%2\n%3\n%4")
+			.arg(reason,
+				 project_title,
+				 QString::number(index),
+				 root.attribute(QStringLiteral("title")));
+
+		//A clash is only possible with a hand-crafted file, but the uuid is a
+		//key : salt the name until it is free. Still deterministic.
+	QUuid uuid = QUuid::createUuidV5(folio_namespace, base);
+	for (int salt = 1 ; uuidUsedByOtherDiagram(uuid) ; ++salt) {
+		uuid = QUuid::createUuidV5(folio_namespace,
+								   base + QStringLiteral("\n")
+								   + QString::number(salt));
+	}
+	return uuid;
+}
+
+/**
 	@brief Diagram::setEventInterface
 	Set event_interface has current interface.
 	Diagram become the ownership of event_interface
@@ -726,6 +801,11 @@ void Diagram::clearEventInterface()
 		delete m_event_interface;
 		m_event_interface = nullptr;
 	}
+}
+
+bool Diagram::eventInterfaceIsRunning() const
+{
+	return m_event_interface && m_event_interface->isRunning();
 }
 
 /**
@@ -906,6 +986,11 @@ QDomDocument Diagram::toXml(bool whole_content, bool is_copy_command) {
 	// schema properties
 	// proprietes du schema
 	if (whole_content) {
+			//Persist the folio identity, so that a folio keeps the same uuid
+			//across save/load. Without it every load invents a new one, and
+			//nothing outside the running instance (version control, a lock,
+			//a diff tool...) can tell which folio is which.
+		dom_root.setAttribute(QStringLiteral("uuid"), m_uuid.toString());
 		border_and_titleblock.titleBlockToXml(dom_root);
 		border_and_titleblock.borderToXml(dom_root);
 
@@ -1406,6 +1491,21 @@ bool Diagram::fromXml(QDomElement &document,
 		// Read attributes of this diagram
 	if (consider_informations)
 	{
+			// Restore the persisted folio uuid. Done first, before any item is
+			// loaded, so that everything created below sees the final uuid.
+			// A folio without a usable one (file written before the uuid was
+			// persisted, or uuid already taken by another folio) gets a
+			// deterministic one instead, see derivedUuid().
+		const QUuid persisted_uuid(root.attribute(QStringLiteral("uuid")));
+		if (persisted_uuid.isNull()) {
+			m_uuid = derivedUuid(root, QStringLiteral("legacy"));
+		} else if (uuidUsedByOtherDiagram(persisted_uuid)) {
+			m_uuid = derivedUuid(root, QStringLiteral("duplicate ")
+								 + persisted_uuid.toString());
+		} else {
+			m_uuid = persisted_uuid;
+		}
+
 		// Load border and titleblock
 		border_and_titleblock.titleBlockFromXml(root);
 		border_and_titleblock.borderFromXml(root);
@@ -1609,10 +1709,7 @@ bool Diagram::fromXml(QDomElement &document,
 		//Get the top left corner of the rectangle that contain all added items
 		QRectF items_rect;
 		for (auto item : added_items) {
-			items_rect = items_rect.united(
-						item->mapToScene(
-							item->boundingRect()
-							).boundingRect());
+			items_rect = items_rect.united(item->mapToScene(item->boundingRect()).boundingRect());
 		}
 
 		QPointF point_ = items_rect.topLeft();
@@ -1620,8 +1717,12 @@ bool Diagram::fromXml(QDomElement &document,
 						position.y() - point_.y()));
 
 			//Translate all added items
-		for (auto qgi : added_items)
+		for (auto qgi : added_items) {
 			qgi->setPos(qgi->pos() += pos_);
+		}
+	}
+	else
+	{
 	}
 
 	  // Load conductor

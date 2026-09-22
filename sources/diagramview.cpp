@@ -16,6 +16,7 @@
 	along with QElectroTech.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "diagramview.h"
+#include "lastusedstyle.h"
 #include "qetproject.h"
 #include "QPropertyUndoCommand/qpropertyundocommand.h"
 #include "diagramcommands.h"
@@ -38,7 +39,10 @@
 #include "ElementsCollection/xmlelementcollection.h"
 #include "NameList/nameslist.h"
 #include "elementdialog.h"
+#include <QApplication>
 #include <QDropEvent>
+#include <QPainter>
+#include <QPointer>
 
 /**
 	Constructeur
@@ -46,7 +50,7 @@
 	@param parent Le QWidget parent de cette vue de schema
 */
 DiagramView::DiagramView(Diagram *diagram, QWidget *parent) :
-	QGraphicsView (parent),
+	PaletteGraphicsView (parent),
 	m_diagram (diagram)
 {
 	grabGesture(Qt::PinchGesture);
@@ -121,7 +125,7 @@ DiagramView::DiagramView(Diagram *diagram, QWidget *parent) :
 		ConductorProperties initial_properties = edited_conductor->properties();
 
 			// prepare a color dialog showing the initial conductor color
-		QColorDialog *color_dialog = new QColorDialog(this);
+		QPointer<QColorDialog> color_dialog = new QColorDialog(this);
 		color_dialog->setWindowTitle(tr("Choisir la nouvelle couleur de ce conducteur"));
 #ifdef Q_OS_MACOS
 		color_dialog -> setWindowFlags(Qt::Sheet);
@@ -143,8 +147,14 @@ DiagramView::DiagramView(Diagram *diagram, QWidget *parent) :
 				QPropertyUndoCommand *undo = new QPropertyUndoCommand(edited_conductor, "properties", old_value, new_value);
 				undo->setText(tr("Modifier les propriétés d'un conducteur", "undo caption"));
 				m_diagram->undoStack().push(undo);
+
+					// remember it for the next conductor drawn this session,
+					// the way LastUsedStyle already does for shapes (#879)
+				LastUsedStyle::setConductorColor(new_color);
 			}
 		}
+		if (color_dialog)
+			delete color_dialog;
 	});
 }
 
@@ -211,11 +221,7 @@ void DiagramView::handleElementDrop(QDropEvent *event)
 	}
 
 	QPointF drop_pos;
-	#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-	drop_pos = mapToScene(event->pos());
-	#else
 	drop_pos = mapToScene(event->position().toPoint());
-	#endif
 
 	if (location.path().endsWith(".qetmak")) {
 		diagram()->setEventInterface(new DiagramEventAddMacro(location, diagram(), drop_pos));
@@ -290,13 +296,8 @@ void DiagramView::handleTextDrop(QDropEvent *e) {
 		iti -> setHtml (e -> mimeData() -> text());
 	}
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-	m_diagram->undoStack().push(new AddGraphicsObjectCommand(
-									iti, m_diagram, mapToScene(e->pos())));
-#else
 	m_diagram->undoStack().push(new AddGraphicsObjectCommand(
 									iti, m_diagram, mapToScene(e->position().toPoint())));
-#endif
 }
 
 /**
@@ -606,14 +607,7 @@ void DiagramView::mouseReleaseEvent(QMouseEvent *e)
 			QMenu *menu = new QMenu(this);
 			menu->addAction(act);
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)	// ### Qt 6: remove
-			menu->popup(e->globalPos());
-#else
-#if TODO_LIST
-#pragma message("@TODO remove code for QT 6 or later")
-#endif
-			menu->popup(e->pos());
-#endif
+			menu->popup(e->globalPosition().toPoint());
 		}
 
 		m_free_rubberbanding = false;
@@ -744,6 +738,10 @@ void DiagramView::keyPressEvent(QKeyEvent *e)
 				//way off the canvas for someone working without a mouse.
 				//Escape steps back out: first it drops the selection, then it
 				//hands focus to the next widget.
+			if (m_diagram && m_diagram->eventInterfaceIsRunning()) {
+				QGraphicsView::keyPressEvent(e);  // let the active tool see it
+				return;
+			}
 			if (m_diagram && !m_diagram->selectedItems().isEmpty()) {
 				m_diagram->clearSelection();
 			} else {
@@ -1086,13 +1084,23 @@ bool DiagramView::event(QEvent *e) {
 }
 
 /**
+	@brief DiagramView::paintingInverted
+	Reimplemented from PaletteGraphicsView: tell the diagram it is being
+	drawn for an inverted display, so it softens its grid.
+*/
+void DiagramView::paintingInverted(bool inverted)
+{
+	m_diagram->setInvertedLightness(inverted);
+}
+
+/**
 	@brief DiagramView::paintEvent
 	Reimplemented from QGraphicsView
 	@param event
 */
 void DiagramView::paintEvent(QPaintEvent *event)
 {
-	QGraphicsView::paintEvent(event);
+	PaletteGraphicsView::paintEvent(event);
 
 	if (m_free_rubberbanding && m_free_rubberband.count() >= 3)
 	{
@@ -1411,9 +1419,6 @@ void DiagramView::createTemplateFromSelection()
 	QFile file(full_path);
 	if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
 		QTextStream out(&file);
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)	// ### Qt 6: remove
-		out.setCodec("UTF-8");	// Qt6 QTextStream defaults to UTF-8
-#endif
 		out << macro_doc.toString(4);
 		file.close();
 		qDebug() << "Template successfully saved to:" << full_path;
