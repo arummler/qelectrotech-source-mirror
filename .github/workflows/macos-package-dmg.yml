@@ -36,7 +36,7 @@ jobs:
 
       - name: Install Qt6 dependencies
         run: |
-          brew install qt cmake ninja pkg-config sqlite
+          brew install qt cmake ninja pkg-config
           vtool -show-build "$(brew --prefix qt)/lib/QtCore.framework/Versions/A/QtCore" | grep -A3 "LC_BUILD_VERSION"
         
       - name: Package DMG

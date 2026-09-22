@@ -36,7 +36,7 @@ jobs:
           set -euo pipefail
 
           sudo pkg install -y git qt6 \
-              cmake ninja ccache pkgconf sqlite3
+              cmake ninja ccache pkgconf
 
           SOURCE_DIR="$PWD/source"
           BUILD_DIR="$PWD/build"
