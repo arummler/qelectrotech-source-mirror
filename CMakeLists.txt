@@ -18,11 +18,28 @@ include(cmake/hoto_update_cmake_message.cmake)
 
 cmake_minimum_required(VERSION 3.5...4.2)
 
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/QET_VERSION" QET_VERSION_STRING LIMIT_COUNT 1)
+string(STRIP "${QET_VERSION_STRING}" QET_VERSION_STRING)
+
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/QET_RELEASE" QET_VERSION_TYPE LIMIT_COUNT 1)
+string(STRIP "${QET_VERSION_TYPE}" QET_VERSION_TYPE)
+
+set(_qet_valid_version_types dev alpha1 alpha2 alpha3 stable)
+if(NOT QET_VERSION_TYPE IN_LIST _qet_valid_version_types)
+  message(FATAL_ERROR "VERSION_TYPE file contains '${QET_VERSION_TYPE}', must be one of: ${_qet_valid_version_types}")
+endif()
+
 project(qelectrotech
-        VERSION 0.200.1
+        VERSION ${QET_VERSION_STRING}
         DESCRIPTION "QET is a CAD/CAE editor focusing on schematics drawing features."
         HOMEPAGE_URL "https://qelectrotech.org/"
         LANGUAGES C CXX)
+        
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/sources/qetversion.cpp.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/qetversion.cpp"
+  @ONLY
+)
 
 include(cmake/copyright_message.cmake)
 
@@ -99,6 +116,23 @@ if(TARGET Qt${QT_VERSION_MAJOR}::Qml)
     add_compile_definitions(QET_HAS_SCRIPTING)
 else()
     message(STATUS "Qt Qml module not available: JavaScript scripting (--run) disabled")
+endif()
+
+# The crash handler writes a backtrace into the dump. Detecting this with
+# __has_include(<execinfo.h>) is not enough: the header is present on FreeBSD
+# too, but backtrace() lives in a separate libexecinfo there, so the compile
+# succeeds and the link fails. FindBacktrace resolves both the header and
+# whichever library actually provides the symbol, so gate on it instead - see
+# the QET_CRASH_BACKTRACE guard in sources/logging/crashhandler.cpp.
+find_package(Backtrace QUIET)
+if(Backtrace_FOUND)
+    list(APPEND QET_PRIVATE_LIBRARIES ${Backtrace_LIBRARIES})
+    include_directories(${Backtrace_INCLUDE_DIRS})
+    add_compile_definitions(QET_CRASH_BACKTRACE)
+else()
+    message(STATUS
+        "backtrace() not available: crash dumps will carry the log ring "
+        "without a backtrace")
 endif()
 
 find_package(SQLite3 REQUIRED)
@@ -275,6 +309,7 @@ target_link_libraries(
 target_include_directories(
     ${PROJECT_NAME}
     PRIVATE
+    ${QET_DIR}/sources
     ${QET_DIR}/sources/titleblock
     ${QET_DIR}/sources/ui
     ${QET_DIR}/sources/qetgraphicsitem
@@ -318,10 +353,11 @@ if(NOT BUILD_WITH_KF)
 endif()
 
 install(TARGETS ${PROJECT_NAME}
-    BUNDLE DESTINATION .
+  BUNDLE DESTINATION .
+  RUNTIME DESTINATION ${QET_BINARY_PATH}
 )
 
-if (NOT MINGW)
+if ((NOT MINGW) AND (NOT WIN32))
     install(DIRECTORY ico/breeze-icons/16x16   DESTINATION ${QET_ICONS_PATH})
     install(DIRECTORY ico/breeze-icons/22x22   DESTINATION ${QET_ICONS_PATH})
     install(DIRECTORY ico/breeze-icons/32x32   DESTINATION ${QET_ICONS_PATH})
@@ -334,9 +370,9 @@ if (NOT MINGW)
     install(DIRECTORY titleblocks DESTINATION share/qelectrotech)
     install(FILES LICENSE ELEMENTS.LICENSE CREDIT README ChangeLog DESTINATION share/doc/qelectrotech)
     if(UNIX AND NOT APPLE)
-        install(FILES misc/org.qelectrotech.qelectrotech.desktop DESTINATION share/applications)
-        install(FILES misc/qelectrotech.xml    DESTINATION ${QET_MIME_PACKAGE_PATH})
-        install(FILES misc/qelectrotech.appdata.xml DESTINATION ${QET_APPDATA_PATH})
+        install(FILES build-aux/linux/org.qelectrotech.qelectrotech.desktop DESTINATION share/applications)
+        install(FILES build-aux/linux/qelectrotech.xml    DESTINATION ${QET_MIME_PACKAGE_PATH})
+        install(FILES build-aux/linux/qelectrotech.appdata.xml DESTINATION ${QET_APPDATA_PATH})
     endif()
     install(FILES ${QM_FILES} DESTINATION ${QET_LANG_PATH})
 endif()

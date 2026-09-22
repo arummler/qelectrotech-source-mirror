@@ -39,7 +39,10 @@
 #include "ElementsCollection/xmlelementcollection.h"
 #include "NameList/nameslist.h"
 #include "elementdialog.h"
+#include <QApplication>
 #include <QDropEvent>
+#include <QPainter>
+#include <QPointer>
 
 /**
 	Constructeur
@@ -47,7 +50,7 @@
 	@param parent Le QWidget parent de cette vue de schema
 */
 DiagramView::DiagramView(Diagram *diagram, QWidget *parent) :
-	QGraphicsView (parent),
+	PaletteGraphicsView (parent),
 	m_diagram (diagram)
 {
 	grabGesture(Qt::PinchGesture);
@@ -122,7 +125,7 @@ DiagramView::DiagramView(Diagram *diagram, QWidget *parent) :
 		ConductorProperties initial_properties = edited_conductor->properties();
 
 			// prepare a color dialog showing the initial conductor color
-		QColorDialog *color_dialog = new QColorDialog(this);
+		QPointer<QColorDialog> color_dialog = new QColorDialog(this);
 		color_dialog->setWindowTitle(tr("Choisir la nouvelle couleur de ce conducteur"));
 #ifdef Q_OS_MACOS
 		color_dialog -> setWindowFlags(Qt::Sheet);
@@ -150,6 +153,8 @@ DiagramView::DiagramView(Diagram *diagram, QWidget *parent) :
 				LastUsedStyle::setConductorColor(new_color);
 			}
 		}
+		if (color_dialog)
+			delete color_dialog;
 	});
 }
 
@@ -1079,13 +1084,23 @@ bool DiagramView::event(QEvent *e) {
 }
 
 /**
+	@brief DiagramView::paintingInverted
+	Reimplemented from PaletteGraphicsView: tell the diagram it is being
+	drawn for an inverted display, so it softens its grid.
+*/
+void DiagramView::paintingInverted(bool inverted)
+{
+	m_diagram->setInvertedLightness(inverted);
+}
+
+/**
 	@brief DiagramView::paintEvent
 	Reimplemented from QGraphicsView
 	@param event
 */
 void DiagramView::paintEvent(QPaintEvent *event)
 {
-	QGraphicsView::paintEvent(event);
+	PaletteGraphicsView::paintEvent(event);
 
 	if (m_free_rubberbanding && m_free_rubberband.count() >= 3)
 	{

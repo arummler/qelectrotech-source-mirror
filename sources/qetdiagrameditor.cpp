@@ -50,6 +50,8 @@
 #include "recentfiles.h"
 #include "shortcutmanager.h"
 #include "ui/bomexportdialog.h"
+#include "ui/conductorcolortoolbutton.h"
+#include "ui/diagrambgcolorbutton.h"
 #include "ui/jumptoelementdialog.h"
 #include "ui/diagrampropertieseditordockwidget.h"
 #include "ui/backupdialog.h"
@@ -389,6 +391,13 @@ void QETDiagramEditor::setUpActions()
 		if (ProjectView *pv = currentProjectView())
 			pv->project()->setAutoConductor(ac);
 	});
+		//Registered with no default sequence on purpose. This is a
+		//setting some people toggle constantly and others never touch,
+		//so it earns a place in the Shortcuts page rather than a key of
+		//its own taken from the ones still free. Asked for on the forum
+		//(viewtopic.php?pid=23296): "est il possible dans les raccourcis
+		//d'ajouter un pour création automatique de conducteur ?"
+	ShortcutManager::instance().registerAction(m_auto_conductor, "diagrameditor.auto_conductor", tr("Éditeur de schémas"), QKeySequence());
 
 		//AutoBreakConductor
 	m_auto_break_conductor = new QAction   (QET::Icons::Conductor, tr("Coupure automatique de conducteur(s)","Tool tip of auto break conductor"), this);
@@ -405,15 +414,8 @@ void QETDiagramEditor::setUpActions()
 			pv->project()->setAutoBreakConductor(abc);
 	});
 
-		//Switch background color
-	m_grey_background = new QAction   (QET::Icons::DiagramBg, tr("Couleur de fond blanc/gris","Tool tip of white/grey background button"), this);
-	m_grey_background -> setStatusTip (tr("Affiche la couleur de fond du folio en blanc ou en gris", "Status tip of white/grey background button"));
-	m_grey_background -> setCheckable (true);
-	connect (m_grey_background, &QAction::triggered, [this](bool checked) {
-		Diagram::background_color = checked ? Qt::darkGray : Qt::white;
-		if (this->currentDiagramView() &&  this->currentDiagramView()->diagram())
-			this->currentDiagramView()->diagram()->update();
-	});
+		//Diagram background color picker
+	m_background_color_button = new DiagramBgColorToolButton(this, this);
 
 		//Draw or not the background grid
 	m_draw_grid = new QAction ( QET::Icons::Grid, tr("Afficher la grille"), this);
@@ -904,7 +906,7 @@ void QETDiagramEditor::setUpToolBar()
 	view_tool_bar -> addSeparator();
 	view_tool_bar -> addAction(m_draw_grid);
 	view_tool_bar -> addAction(m_draw_guides);
-	view_tool_bar -> addAction (m_grey_background);
+	view_tool_bar -> addWidget(m_background_color_button);
 	view_tool_bar -> addSeparator();
 	view_tool_bar -> addActions(m_zoom_action_toolBar);
 
@@ -912,6 +914,10 @@ void QETDiagramEditor::setUpToolBar()
 	diagram_tool_bar -> addAction (m_conductor_reset);
 	diagram_tool_bar -> addAction (m_auto_conductor);
 	diagram_tool_bar -> addAction (m_auto_break_conductor);
+		//Sits with the conductor actions it works alongside: it colours
+		//the selected conductors and sets the colour of the next one drawn.
+	m_conductor_color_button = new ConductorColorToolButton(this, this);
+	diagram_tool_bar -> addWidget (m_conductor_color_button);
 
 	m_add_item_tool_bar = new QToolBar(tr("Ajouter"), this);
 	m_add_item_tool_bar->setObjectName("adding");
@@ -1051,7 +1057,7 @@ void QETDiagramEditor::setUpMenu()
 	menu_affichage -> addSeparator();
 	menu_affichage -> addAction(m_draw_grid);
 	menu_affichage -> addAction(m_draw_guides);
-	menu_affichage -> addAction(m_grey_background);
+	menu_affichage -> addMenu(m_background_color_button->menu());
 	menu_affichage -> addSeparator();
 	menu_affichage -> addActions(m_zoom_actions_group.actions());
 
@@ -1868,7 +1874,7 @@ void QETDiagramEditor::slot_updateActions()
 	m_select_actions_group.         setEnabled(opened_diagram);
 	m_add_item_actions_group.       setEnabled(editable_project);
 	m_row_column_actions_group.     setEnabled(editable_project);
-	m_grey_background->             setEnabled(opened_diagram);
+	m_background_color_button->    setEnabled(opened_diagram);
 	m_draw_grid->                   setEnabled(opened_diagram);
 	m_draw_guides->                 setEnabled(opened_diagram);
 
@@ -2109,6 +2115,10 @@ void QETDiagramEditor::slot_updateModeActions()
 	{
 		m_auto_conductor -> setDisabled(true);
 		m_auto_break_conductor -> setDisabled(true);
+	}
+
+	if (m_conductor_color_button) {
+		m_conductor_color_button->updateEnabledState();
 	}
 }
 
@@ -2840,7 +2850,7 @@ void QETDiagramEditor::updateWindowModifiedState()
 		setWindowTitle(QString("%1[*] - %2").arg(
 			project->pathNameTitle(),
 			tr("QElectroTech", "window title")));
-		setWindowModified(project->projectOptionsWereModified());
+		setWindowModified(project->projectWasModified());
 	} else {
 		setWindowTitle(tr("QElectroTech", "window title"));
 		setWindowModified(false);

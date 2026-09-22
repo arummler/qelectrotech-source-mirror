@@ -18,6 +18,7 @@
 #include "qetapp.h"
 
 #include "configdialog.h"
+#include "qet.h"
 #include "ui/configpage/configpages.h"
 #include "editor/ui/qetelementeditor.h"
 #include "elementscollectioncache.h"
@@ -27,6 +28,7 @@
 #include "qetdiagrameditor.h"
 #include "qeticons.h"
 #include "qetpalette.h"
+#include "qetstyle.h"
 #include "utils/qetutils.h"
 #include "qetmessagebox.h"
 #include "qetproject.h"
@@ -51,6 +53,7 @@
 #include <QFontDatabase>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QStyleFactory>
 #include <QStyleHints>
 #ifdef BUILD_WITHOUT_KF
 #	include "ui/nokde/kautosavefile.h"
@@ -124,6 +127,7 @@ QETApp::QETApp() :
 	QET::Icons::initIcons();
 	initFonts();
 	initStyle();
+	QET::loadCustomColors();
 	initSplashScreen();
 	initSystemTray();
 
@@ -168,6 +172,7 @@ QETApp::QETApp() :
 */
 QETApp::~QETApp()
 {
+	QET::saveCustomColors();
 	m_elements_recent_files->save();
 	m_projects_recent_files->save();
 
@@ -230,6 +235,8 @@ QString QETApp::loadedQtTranslationFile()
 */
 void QETApp::setLanguage(const QString &desired_language) {
 	QString languages_path = languagesPath();
+	
+	QLocale::setDefault(QLocale(desired_language));
 
 	// load Qt library translations
 	QString qt_l10n_path = QLibraryInfo::path(QLibraryInfo::TranslationsPath);
@@ -1803,6 +1810,10 @@ void QETApp::useSystemPalette(bool use) {
 			file.close();
 		}
 	}
+	// Widgets with their own style sheet keep the palette they were
+	// polished with; after a live light/dark switch they would stay in
+	// the old colors (see QET::Palette::refreshStyleSheets).
+	QET::Palette::refreshStyleSheets();
 }
 
 /**
@@ -2333,18 +2344,30 @@ void QETApp::initFonts()
 
 /**
 	@brief QETApp::initIconTheme
-	Register QET's icon theme "qet" (see misc/make_icon_themes.py and
-	ico/icon-themes.qrc) and make it the current theme, so
-	QIcon::fromTheme("name") resolves to QET's own icons on every
-	platform. Must run before QET::Icons::initIcons(), which looks icons
-	up by name.
+	Register QET's two icon themes ("qet" and "qet-dark", see
+	misc/make_icon_themes.py and ico/icon-themes.qrc) and pick the one
+	matching the current palette. Must run before QET::Icons::initIcons(),
+	which looks icons up by name.
 */
 void QETApp::initIconTheme()
 {
 	QStringList paths = QIcon::themeSearchPaths();
 	paths.prepend(QStringLiteral(":/ico/themes"));
 	QIcon::setThemeSearchPaths(paths);
-	QIcon::setThemeName(QStringLiteral("qet"));
+	applyIconTheme(qApp->palette());
+}
+
+/**
+	@brief QETApp::applyIconTheme
+	Select "qet-dark" for a dark palette, "qet" otherwise. Icons created
+	with QIcon::fromTheme() re-resolve on their next paint, so this can be
+	called again whenever the palette changes.
+*/
+void QETApp::applyIconTheme(const QPalette &palette)
+{
+	QIcon::setThemeName(QET::Palette::isDark(palette)
+	                    ? QStringLiteral("qet-dark")
+	                    : QStringLiteral("qet"));
 }
 
 /**
@@ -2353,6 +2376,12 @@ void QETApp::initIconTheme()
 */
 void QETApp::initStyle()
 {
+	// Wrap the running style so icons get a hover state (see qetstyle.h).
+	// The proxy keeps the base style's object name, so the Fusion checks
+	// below still see "fusion".
+	if (!qobject_cast<QETStyle *>(qApp->style()))
+		qApp->setStyle(new QETStyle(QStyleFactory::create(qApp->style()->objectName())));
+
 	initial_palette_ = qApp->palette();
 
 #ifdef Q_OS_MACOS
@@ -2371,6 +2400,7 @@ void QETApp::initStyle()
 	if (QET::Palette::styleIsFusion(qApp->style()))
 		initial_palette_ = QET::Palette::forFusion(initial_palette_);
 #endif
+	applyIconTheme(initial_palette_);
 
 	//Apply or not the system style
 	QSettings settings;
@@ -2389,6 +2419,7 @@ void QETApp::initStyle()
 		initial_palette_ = scheme == Qt::ColorScheme::Dark
 		                   ? QET::Palette::fusionDark()
 		                   : QET::Palette::fusionLight();
+		applyIconTheme(initial_palette_);
 		QSettings settings;
 		useSystemPalette(settings.value("usesystemcolors", true).toBool());
 	});
@@ -2759,11 +2790,16 @@ void QETApp::offerBackupFiles(const QList<KAutoSaveFile *> &stale_files)
 void QETApp::checkCrashDump()
 {
 	QetLogger &logger = QetLogger::instance();
-	if (!logger.hasPendingCrashDump()) {
+
+	// Listed once, then used both to build the contents and to delete
+	// below. Re-listing after the dialog closes would delete a dump
+	// written while it was open, unseen -- see clearPendingCrashDump().
+	const QStringList offered = logger.pendingCrashDumpFiles();
+	if (offered.isEmpty()) {
 		return;
 	}
 
-	const QByteArray content = logger.pendingCrashDumpContents();
+	const QByteArray content = logger.pendingCrashDumpContents(offered);
 
 	DiagnosticsReportDialog dialog(
 			tr("Rapport de plantage"),
@@ -2775,7 +2811,7 @@ void QETApp::checkCrashDump()
 
 	// Offered once, then marked retrieved -- regardless of whether the
 	// user chose to save it -- so it is never offered a second time.
-	logger.clearPendingCrashDump();
+	logger.clearPendingCrashDump(offered);
 }
 
 /**

@@ -248,8 +248,12 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/qet.h
   ${QET_DIR}/sources/qeticons.cpp
   ${QET_DIR}/sources/qeticons.h
+  ${QET_DIR}/sources/palettegraphicsview.cpp
+  ${QET_DIR}/sources/palettegraphicsview.h
   ${QET_DIR}/sources/qetpalette.cpp
   ${QET_DIR}/sources/qetpalette.h
+  ${QET_DIR}/sources/qetstyle.cpp
+  ${QET_DIR}/sources/qetstyle.h
   ${QET_DIR}/sources/qetinformation.cpp
   ${QET_DIR}/sources/qetinformation.h
   ${QET_DIR}/sources/qetmainwindow.cpp
@@ -264,7 +268,7 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/qetresult.h
   ${QET_DIR}/sources/qetxml.cpp
   ${QET_DIR}/sources/qetxml.h
-  ${QET_DIR}/sources/qetversion.cpp
+  ${CMAKE_CURRENT_BINARY_DIR}/generated/qetversion.cpp
   ${QET_DIR}/sources/qetversion.h
   ${QET_DIR}/sources/qfilenameedit.cpp
   ${QET_DIR}/sources/qfilenameedit.h
@@ -434,6 +438,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ElementsCollection/elementcollectionhandler.h
   ${QET_DIR}/sources/ElementsCollection/elementcollectionitem.cpp
   ${QET_DIR}/sources/ElementsCollection/elementcollectionitem.h
+  ${QET_DIR}/sources/ElementsCollection/elementpreviewdelegate.cpp
+  ${QET_DIR}/sources/ElementsCollection/elementpreviewdelegate.h
   ${QET_DIR}/sources/ElementsCollection/elementscollectionmodel.cpp
   ${QET_DIR}/sources/ElementsCollection/elementscollectionmodel.h
   ${QET_DIR}/sources/ElementsCollection/elementscollectionwidget.cpp
@@ -500,10 +506,6 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/PropertiesEditor/propertieseditordockwidget.h
   ${QET_DIR}/sources/PropertiesEditor/propertieseditorwidget.cpp
   ${QET_DIR}/sources/PropertiesEditor/propertieseditorwidget.h
-
-  ${QET_DIR}/pugixml/src/pugiconfig.hpp
-  ${QET_DIR}/pugixml/src/pugixml.cpp
-  ${QET_DIR}/pugixml/src/pugixml.hpp
 
   ${QET_DIR}/sources/qetgraphicsitem/conductor.cpp
   ${QET_DIR}/sources/qetgraphicsitem/conductor.h
@@ -699,6 +701,10 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ui/contactgroupselectiondialog.h
   ${QET_DIR}/sources/ui/conductorpropertiesdialog.cpp
   ${QET_DIR}/sources/ui/conductorpropertiesdialog.h
+  ${QET_DIR}/sources/ui/conductorcolortoolbutton.cpp
+  ${QET_DIR}/sources/ui/conductorcolortoolbutton.h
+  ${QET_DIR}/sources/ui/diagrambgcolorbutton.cpp
+  ${QET_DIR}/sources/ui/diagrambgcolorbutton.h
   ${QET_DIR}/sources/ui/conductorpropertieswidget.cpp
   ${QET_DIR}/sources/ui/conductorpropertieswidget.h
   ${QET_DIR}/sources/ui/configsaveloaderwidget.cpp

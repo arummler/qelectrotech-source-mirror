@@ -20,10 +20,13 @@
 #include "shortcutmanager.h"
 
 #include <limits>
+#include <QBuffer>
+#include <QColorDialog>
 #include <QGraphicsSceneContextMenuEvent>
 #include <QAction>
 #include <QFileInfo>
 #include <QSaveFile>
+#include <QSettings>
 #include <QTextStream>
 #include <QRegularExpression>
 #include <QActionGroup>
@@ -268,84 +271,88 @@ QString QET::ElementsAndConductorsSentence(
 		int tables_count,
 		int terminal_strip_count)
 {
-	QString text;
+	QStringList parts;
 	if (elements_count) {
-		text += QObject::tr(
-			"%n élément(s)",
-			"part of a sentence listing the content of a diagram",
-			elements_count
+		parts.append(
+			QObject::tr(
+				"%n élément(s)",
+				"part of a enumerative partial sentence listing the content of a diagram",
+				elements_count
+			)
 		);
 	}
 
 	if (conductors_count) {
-		if (!text.isEmpty()) text += ", ";
-		text += QObject::tr(
-			"%n conducteur(s)",
-			"part of a sentence listing the content of a diagram",
-			conductors_count
+		parts.append(
+			QObject::tr(
+				"%n conducteur(s)",
+				"part of a enumerative partial sentence listing the content of a diagram",
+				conductors_count
+			)
 		);
 	}
 
 	if (texts_count) {
-		if (!text.isEmpty()) text += ", ";
-		text += QObject::tr(
-			"%n champ(s) de texte",
-			"part of a sentence listing the content of a diagram",
-			texts_count
+		parts.append(
+			QObject::tr(
+				"%n champ(s) de texte",
+				"part of a enumerative partial sentence listing the content of a diagram",
+				texts_count
+			)
 		);
 	}
 
 	if (images_count) {
-		if (!text.isEmpty()) text += ", ";
-		// Qt's %n only selects a grammatical singular/plural form (the
-		// "(s)" convention used by every other count here) -- it never
-		// spells the number out as a word, so getting "une image"
-		// instead of the literal "1 image" for the single-item case
-		// means handling that count outside %n entirely, with its own
-		// fixed string.
-		text += images_count == 1
-				? QObject::tr("une image", "part of a sentence listing the content of a diagram")
-				: QObject::tr(
-					"%n images",
-					"part of a sentence listing the content of a diagram",
-					images_count
-				);
+		parts.append(
+			QObject::tr(
+				"%n image(s)",
+				"part of a enumerative partial sentence listing the content of a diagram",
+				images_count
+			)
+		);
 	}
 
 	if (shapes_count) {
-		if (!text.isEmpty()) text += ", ";
-		text += QObject::tr(
-			"%n forme(s)",
-			"part of a sentence listing the content of a diagram",
-			shapes_count
+		parts.append(
+			QObject::tr(
+				"%n forme(s)",
+				"part of a enumerative partial sentence listing the content of a diagram",
+				shapes_count
+			)
 		);
 	}
 
 	if (element_text_count) {
-		if (!text.isEmpty()) text += ", ";
-		text += QObject::tr(
-					"%n texte(s) d'élément",
-					"part of a sentence listing the content of a diagram",
-					element_text_count);
+		parts.append(
+			QObject::tr(
+				"%n texte(s) d'élément",
+				"part of a enumerative partial sentence listing the content of a diagram",
+				element_text_count
+			)
+		);
 	}
 
 	if (tables_count) {
-		if (!text.isEmpty()) text += ", ";
-		text += QObject::tr(
-					"%n tableau(s)",
-					"part of a sentence listing the content of diagram",
-					tables_count);
+		parts.append(
+			QObject::tr(
+				"%n tableau(s)",
+				"part of a enumerative partial sentence listing the content of diagram",
+				tables_count
+			)
+		);
 	}
 
 	if (terminal_strip_count) {
-		if (!text.isEmpty()) text += ", ";
-		text += QObject::tr(
-					"%n plan de bornes",
-					"part of a sentence listing the content of a diagram",
-					terminal_strip_count);
+		parts.append(
+			QObject::tr(
+				"%n plan(s) de bornes",
+				"part of a enumerative partial sentence listing the content of a diagram",
+				terminal_strip_count
+			)
+		);
 	}
 
-	return(text);
+	return QLocale().createSeparatedList(parts);
 }
 
 /**
@@ -844,4 +851,56 @@ bool QET::writeToFile(QDomDocument &xml_doc, QFile *file, QString *error_message
 	}
 
 	return(true);
+}
+
+/**
+	@brief QET::saveCustomColors
+	Save the 16 QColorDialog custom colors to QSettings so they persist
+	across application restarts.
+*/
+void QET::saveCustomColors()
+{
+	QByteArray ba;
+	QBuffer buf(&ba);
+	buf.open(QIODevice::WriteOnly);
+	QDataStream s(&buf);
+	s.setVersion(QDataStream::Qt_6_0);
+	for (int i = 0; i < 16; i++)
+		s << QColorDialog::customColor(i);
+	QSettings settings;
+	settings.setValue(QStringLiteral("color/customColors"), ba);
+}
+
+/**
+	@brief QET::loadCustomColors
+	Load the 16 QColorDialog custom colors from QSettings into Qt's
+	internal custom color array.  A short or corrupt buffer is ignored
+	so that unread slots keep their default rather than turning black.
+*/
+void QET::loadCustomColors()
+{
+	QSettings settings;
+	QByteArray ba = settings.value(QStringLiteral("color/customColors")).toByteArray();
+
+	// Fall back to the legacy ungrouped key used by earlier versions.
+	if (ba.isEmpty())
+		ba = settings.value(QStringLiteral("customColors")).toByteArray();
+
+	if (ba.isEmpty())
+		return;
+
+	QBuffer buf(&ba);
+	buf.open(QIODevice::ReadOnly);
+	QDataStream s(&buf);
+	s.setVersion(QDataStream::Qt_6_0);
+
+	QColor colors[16];
+	for (int i = 0; i < 16; i++)
+		s >> colors[i];
+
+	if (s.status() != QDataStream::Ok)
+		return;
+
+	for (int i = 0; i < 16; i++)
+		QColorDialog::setCustomColor(i, colors[i]);
 }

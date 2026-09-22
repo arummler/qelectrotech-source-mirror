@@ -1,0 +1,296 @@
+name: Package Windows MSI (WiX v7)
+
+on:
+  # Triggered automatically after a successful Windows build on master
+  workflow_call:  
+  # workflow_run:
+  #  workflows: ["Windows Build"]
+  #  types: [completed]
+  #  branches: [master]
+  # Manual trigger still available (e.g. for a specific run_id)
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run ID of 'Windows Build' (leave empty for automatic)"
+        required: false
+        default: ""
+
+jobs:
+  build-msi:
+    name: Package MSI with WiX v7
+    runs-on: windows-latest
+    # Only runs if Windows Build succeeded (or triggered manually)
+    # if: >
+    #  github.event_name == 'workflow_dispatch' ||
+    #  github.event.workflow_run.conclusion == 'success'
+
+    concurrency:
+      group: windows-package-msi-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true  
+
+    permissions:
+      contents: write
+      pages: write
+      id-token: write  # Required by SignPath
+
+    steps:
+      # ----------------------------------------------------------------
+      # 1. Checkout (to retrieve QElectroTech.wxs and sources)
+      # ----------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # ----------------------------------------------------------------
+      # 2. Download the portable artifact
+      # ----------------------------------------------------------------
+      - name: Download portable artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: qelectrotech-windows-portable
+          path: artifact\files
+          # workflow_run => use the triggering run's ID
+          # workflow_dispatch => use input run_id if provided, otherwise current run
+          run-id: ${{ github.event.workflow_run.id || github.event.inputs.run_id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+
+      # ----------------------------------------------------------------
+      # 3. Extract version
+      #    VERSION/RELEASE files at the repo root (single source of truth)
+      #    are read.
+      # ----------------------------------------------------------------
+      - name: Extract version
+        id: version
+        shell: pwsh
+        run: |
+          $ver = (Get-Content "QET_VERSION" -Raw).Trim()
+          $release = (Get-Content "QET_RELEASE" -Raw).Trim()
+
+          # Short SHA and cumulative revision count -- still computed
+          # unconditionally, since VERSION_MSI's monotonic numeric
+          # requirement is independent of RELEASE stage.
+          $sha = git rev-parse --short HEAD 2>$null
+          if (-not $sha) { $sha = "unknown" }
+          $count = git rev-list HEAD --count 2>$null
+          $rev = [int]$count + 473
+
+          # MSI Version only compares Major.Minor.Build (the 4th field is
+          # ignored by Windows Installer for upgrade detection), so we
+          # inject rev into Build to force a real increase between builds
+          # and trigger MajorUpgrade's automatic uninstall.
+          $verParts = $ver -split '\.'
+          $verMsi = "$($verParts[0]).$($verParts[1]).$($rev % 65535)"
+
+          # Human-readable suffix depends on RELEASE:
+          #   dev            -> -r<rev>-<sha>  (nightly, no fixed tag exists)
+          #   alpha1/2/3     -> -alpha1/2/3    (tagged, no hash needed)
+          #   stable         -> nothing        (tagged, final release)
+          switch ($release) {
+            "dev"    { $suffix = "-r${rev}-${sha}" }
+            "alpha1" { $suffix = "-alpha1" }
+            "alpha2" { $suffix = "-alpha2" }
+            "alpha3" { $suffix = "-alpha3" }
+            "stable" { $suffix = "" }
+            default {
+              Write-Error "Unrecognized RELEASE value '$release' (expected dev, alpha1, alpha2, alpha3, or stable)"
+              exit 1
+            }
+          }
+
+          $verDisplay = "${ver}${suffix}_x86_64-win64"
+
+          echo "VERSION_MSI=$verMsi"         >> $env:GITHUB_OUTPUT
+          echo "VERSION_DISPLAY=$verDisplay" >> $env:GITHUB_OUTPUT
+          Write-Host "Version MSI     : $verMsi"
+          Write-Host "Version display : $verDisplay"
+
+          $qtArgs = ""
+
+          echo "QT_ARGS=$qtArgs" >> $env:GITHUB_OUTPUT
+          Write-Host "Qt platform args: '$qtArgs'"
+
+      # ----------------------------------------------------------------
+      # 4. Install WiX v7, accept EULA and install WixUI extension
+      # ----------------------------------------------------------------
+      - name: Install WiX v7
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 7.0.0
+          $toolsPath = [System.IO.Path]::Combine($env:USERPROFILE, '.dotnet', 'tools')
+          $env:PATH = "$toolsPath;$env:PATH"
+          echo $toolsPath >> $env:GITHUB_PATH
+          wix eula accept wix7
+          wix extension add WixToolset.UI.wixext/7.0.0
+          wix extension add WixToolset.Util.wixext/7.0.0
+          Write-Host "WiX v7 installed, EULA accepted, UI + Util extensions added."
+
+      # ----------------------------------------------------------------
+      # 5. Check that the WXS file exists in the repository
+      # ----------------------------------------------------------------
+      - name: Check WXS file
+        shell: pwsh
+        run: |
+          $wxs = "build-aux\windows\QElectroTech.wxs"
+          if (-not (Test-Path $wxs)) {
+            Write-Error "WXS file not found: $wxs"
+            exit 1
+          }
+          Write-Host "WXS found: $wxs"
+
+      # ----------------------------------------------------------------
+      # 6. Check the artifact structure and locate files/
+      # ----------------------------------------------------------------
+      - name: Check artifact structure
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path "artifact\files" -Filter "qelectrotech.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) {
+            $exe = Get-ChildItem -Path "artifact\files" -Filter "QElectroTech.exe" -Recurse | Select-Object -First 1
+          }
+          if (-not $exe) {
+            Write-Error "qelectrotech.exe not found in artifact"
+            exit 1
+          }
+          Write-Host "Executable: $($exe.FullName) ($([math]::Round($exe.Length/1MB,1)) MB)"
+          $binDir    = $exe.Directory.FullName
+          $filesDir  = Split-Path $binDir -Parent
+          echo "FILES_DIR=$filesDir" >> $env:GITHUB_ENV
+          Write-Host "FILES_DIR: $filesDir"
+
+      # ----------------------------------------------------------------
+      # 7. Convert LICENSE (GPL-2) to RTF for the WixUI licence screen
+      # ----------------------------------------------------------------
+      - name: Convert LICENSE to RTF
+        shell: pwsh
+        run: |
+          $licSrc = "LICENSE"
+          $licRtf = "$env:TEMP\License.rtf"
+          if (-not (Test-Path $licSrc)) {
+            Write-Error "LICENSE file not found in repository root"
+            exit 1
+          }
+          $lines = Get-Content $licSrc -Encoding UTF8
+          $rtf = New-Object System.Text.StringBuilder
+          [void]$rtf.AppendLine('{\rtf1\ansi\ansicpg1252\deff0')
+          [void]$rtf.AppendLine('{\fonttbl{\f0\fmodern\fprq1\fcharset0 Courier New;}}')
+          [void]$rtf.AppendLine('{\colortbl;\red0\green0\blue0;}')
+          [void]$rtf.AppendLine('\f0\fs18\cf1')
+          foreach ($line in $lines) {
+            $escaped = $line `
+              -replace '\\', '\\\\' `
+              -replace '\{', '\{' `
+              -replace '\}', '\}'
+            [void]$rtf.AppendLine("$escaped\par")
+          }
+          [void]$rtf.AppendLine('}')
+          [System.IO.File]::WriteAllText($licRtf, $rtf.ToString(), [System.Text.Encoding]::ASCII)
+          echo "LICENSE_RTF=$licRtf" >> $env:GITHUB_ENV
+          Write-Host "License.rtf generated: $licRtf"
+
+      # ----------------------------------------------------------------
+      # 8. Replace Lancer QET.bat with the MSI-specific version
+      # ----------------------------------------------------------------
+      - name: Replace Lancer QET.bat for MSI
+        shell: pwsh
+        run: |
+          $qtArgs  = "${{ steps.version.outputs.QT_ARGS }}"
+          $bat     = "$env:FILES_DIR\Lancer QET.bat"
+          $content = "@echo off`r`nstart `"`" `"%~dp0bin\qelectrotech.exe`" --common-elements-dir=`"%~dp0elements/`" --common-tbt-dir=`"%~dp0titleblocks/`" --lang-dir=`"%~dp0lang/`" $qtArgs`r`n"
+          [System.IO.File]::WriteAllText($bat, $content, [System.Text.Encoding]::ASCII)
+          Write-Host "Lancer QET.bat replaced for MSI installation (qtArgs: '$qtArgs')."
+
+      # ----------------------------------------------------------------
+      # 9. Build the MSI (unsigned at this stage — signing happens below)
+      #    Qt6 keeps its own ProductCode seed (distinct from the retired Qt5
+      #    MSI), so a machine that still has the old Qt5 MSI installed gets a
+      #    separate, coexisting install rather than an unexpected upgrade.
+      # ----------------------------------------------------------------
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          $version    = "${{ steps.version.outputs.VERSION_MSI }}"
+          $verDisplay = "${{ steps.version.outputs.VERSION_DISPLAY }}"
+          $filesDir   = $env:FILES_DIR
+          $licRtf     = $env:LICENSE_RTF
+          $wxs        = "build-aux\windows\QElectroTech.wxs"
+          $outputName = "QElectroTech-${verDisplay}.msi"
+
+          $seed      = "qelectrotech-msi-qt6-$version"
+          $sha1      = [System.Security.Cryptography.SHA1]::Create()
+          $hash      = $sha1.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($seed))
+          $hash[6]   = ($hash[6] -band 0x0F) -bor 0x50
+          $hash[8]   = ($hash[8] -band 0x3F) -bor 0x80
+          $productCode = "{$([System.Guid]::new([byte[]]$hash[0..15]).ToString().ToUpper())}"
+
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+
+          Write-Host "=== wix build ==="
+          Write-Host " Version     : $version"
+          Write-Host " ProductCode : $productCode"
+          Write-Host " Output      : dist\$outputName"
+
+          $qtArgs = "${{ steps.version.outputs.QT_ARGS }}"
+
+          wix build $wxs `
+            -arch x64 `
+            -d "Version=$version" `
+            -d "ProductVersion=$verDisplay" `
+            -d "ProductCode=$productCode" `
+            -d "FilesDir=$filesDir" `
+            -d "LicenseRtf=$licRtf" `
+            -d QtPlatformArgs="$qtArgs" `
+            -ext WixToolset.UI.wixext `
+            -ext WixToolset.Util.wixext `
+            -o "dist\$outputName"
+
+          if (-not (Test-Path "dist\$outputName")) {
+            Write-Error "MSI not generated: dist\$outputName"
+            exit 1
+          }
+
+          $size = [math]::Round((Get-Item "dist\$outputName").Length / 1MB, 1)
+          Write-Host "MSI generated: dist\$outputName ($size MB) OK"
+          echo "MSI_NAME=$outputName" >> $env:GITHUB_ENV
+
+      - name: Upload unsigned MSI artifact (pre-signing)
+        id: upload_unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          name: qelectrotech-windows-msi-unsigned
+          path: dist\*.msi
+          retention-days: 1
+          if-no-files-found: error
+
+      # Forks do not have the SignPath secrets, so guard on them.
+      # (cf. DieterMayerOSS:fix/msi-signing-fork-guard, d3f60c88)
+      - name: Sign MSI via SignPath
+        if: github.repository == 'qelectrotech/qelectrotech-source-mirror' && env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: 'qelectrotech-source-mirror'
+          signing-policy-slug: 'test-signing'
+          artifact-configuration-slug: 'MSI'
+          github-artifact-id: ${{ steps.upload_unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: 'dist\'
+
+      - name: Upload signed MSI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: qelectrotech-windows-msi
+          path: dist\*.msi
+          retention-days: 40
+          if-no-files-found: error
+
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "=== MSI build summary  ==="
+          Write-Host "Version : ${{ steps.version.outputs.VERSION_DISPLAY }}"
+          Write-Host "Signed  : $(if ('${{ env.SIGNPATH_API_TOKEN }}' -ne '') { 'yes' } else { 'no (SignPath not configured, or fork)' })"
+

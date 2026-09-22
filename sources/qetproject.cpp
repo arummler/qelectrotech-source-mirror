@@ -83,6 +83,30 @@ m_project_properties_handler{this}
 		m_default_guides.append(g);
 	}
 	settings.endArray();
+
+		//Load global auto-numbering defaults from QSettings
+	{
+		auto conductorData = NumerotationContext::loadFromSettings(settings, QStringLiteral("autonum/conductor"));
+		for (auto it = conductorData.first.constBegin(); it != conductorData.first.constEnd(); ++it) {
+			addConductorAutoNum(it.key(), it.value());
+		}
+		if (!conductorData.second.isEmpty()) {
+			setCurrentConductorAutoNum(conductorData.second);
+		}
+
+		auto elementData = NumerotationContext::loadFromSettings(settings, QStringLiteral("autonum/element"));
+		for (auto it = elementData.first.constBegin(); it != elementData.first.constEnd(); ++it) {
+			addElementAutoNum(it.key(), it.value());
+		}
+		if (!elementData.second.isEmpty()) {
+			setCurrrentElementAutonum(elementData.second);
+		}
+
+		auto folioData = NumerotationContext::loadFromSettings(settings, QStringLiteral("autonum/folio"));
+		for (auto it = folioData.first.constBegin(); it != folioData.first.constEnd(); ++it) {
+			addFolioAutoNum(it.key(), it.value());
+		}
+	}
 }
 
 ProjectPropertiesHandler &QETProject::projectPropertiesHandler()
@@ -534,7 +558,9 @@ QString QETProject::pathNameTitle() const
 			)
 		).arg(final_title);
 	}
-	if (m_modified) {
+	// Same condition as projectWasModified(): project-options changeg (m_modified) OR the undo stack sitting away from
+	// its clean index. 
+	if (m_modified || !m_undo_stack->isClean()) {
 		final_title = QString(
 			tr(
 				"%1 [modifié]",

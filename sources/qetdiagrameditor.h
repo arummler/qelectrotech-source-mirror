@@ -32,7 +32,9 @@ class QMdiSubWindow;
 class QETProject;
 class QETResult;
 class ProjectView;
+class ConductorColorToolButton;
 class CustomElement;
+class DiagramBgColorToolButton;
 class Diagram;
 class DiagramView;
 class Element;
@@ -199,7 +201,6 @@ class QETDiagramEditor : public QETMainWindow
 		*m_paste,			///< Paste clipboard content on the current diagram
 		*m_auto_conductor,		///< Enable/Disable the use of auto conductor
 		*m_auto_break_conductor,	///< Enable/Disable the use of auto break conductor
-		*m_grey_background,		///< Switch the background color in white or grey
 		*m_draw_grid,			///< Switch the background grid display or not
 		*m_draw_guides = nullptr,	///< Switch the custom guides display or not
 		*m_project_edit_properties,	///< Edit the properties of the current project.
@@ -236,6 +237,11 @@ class QETDiagramEditor : public QETMainWindow
 		*m_save_file_as,		///< Save current project as a specific file
 		*m_find = nullptr,
 		*m_jump_to_element = nullptr;	///< Open the "jump to element" quick-open popup
+
+		///< One-click conductor colour, in the "Schéma" toolbar
+		ConductorColorToolButton *m_conductor_color_button = nullptr;
+		///< Diagram background color picker, in the "Affichage" toolbar
+		DiagramBgColorToolButton *m_background_color_button = nullptr;
 
 		QList <QAction *> m_zoom_action_toolBar; ///Only zoom action must displayed in the toolbar
 
