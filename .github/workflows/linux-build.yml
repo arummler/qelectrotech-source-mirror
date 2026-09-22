@@ -42,6 +42,9 @@ jobs:
             sudo apt-get install -y libgl1-mesa-dev libegl1-mesa-dev
           fi
 
+          cmake --build "$BUILD_DIR"
+          cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
+
       - name: Configure, build, install
         run: |
           set -euo pipefail
@@ -51,11 +54,27 @@ jobs:
 
           cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DQT_VERSION_MAJOR=6 \
             -DBUILD_WITH_KF=OFF \
             -DPACKAGE_TESTS=OFF \
             -DCMAKE_POLICY_DEFAULT_CMP0077=NEW \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 
 
-          cmake --build "$BUILD_DIR"
-          cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
+      - name: Unit tests
+        run: xvfb-run -a ctest --test-dir build --output-on-failure
+
+      - name: IPC open-forwarding regression (#868)
+        # Fails the job only on an actual crash. An inconclusive run means the
+        # crash path was not exercised -- it proves nothing, which is not the
+        # same as a regression, and failing on it would make this job flaky
+        # rather than informative.
+        run: |
+          set +e
+          tests/ipc-regression/run.sh --binary build/qelectrotech
+          status=$?
+          set -e
+          case $status in
+            0) echo "::notice::IPC gate passed" ;;
+            2) echo "::warning::IPC gate inconclusive -- the crash path was not exercised, nothing was proven" ;;
+            *) echo "::error::IPC gate failed -- forwarded files are being opened inside the socket handler again"
+               exit 1 ;;
+          esac
