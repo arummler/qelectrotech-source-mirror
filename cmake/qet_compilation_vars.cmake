@@ -312,6 +312,8 @@ set(QET_SRC_FILES
 
   ${QET_DIR}/sources/dataBase/projectdatabase.cpp
   ${QET_DIR}/sources/dataBase/projectdatabase.h
+  ${QET_DIR}/sources/dataBase/sqlreadonly.cpp
+  ${QET_DIR}/sources/dataBase/sqlreadonly.h
 
   ${QET_DIR}/sources/dataBase/ui/elementquerywidget.cpp
   ${QET_DIR}/sources/dataBase/ui/elementquerywidget.h
@@ -721,6 +723,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ui/backupdialog.h
   ${QET_DIR}/sources/ui/dialogwaiting.cpp
   ${QET_DIR}/sources/ui/dialogwaiting.h
+  ${QET_DIR}/sources/ui/duplicateoffsetdialog.cpp
+  ${QET_DIR}/sources/ui/duplicateoffsetdialog.h
   ${QET_DIR}/sources/ui/dynamicelementtextitemeditor.cpp
   ${QET_DIR}/sources/ui/dynamicelementtextitemeditor.h
   ${QET_DIR}/sources/ui/dynamicelementtextmodel.cpp
