@@ -37,6 +37,7 @@ jobs:
             mingw-w64-ucrt-x86_64-qt6-tools
             mingw-w64-ucrt-x86_64-qt6-translations
             mingw-w64-ucrt-x86_64-qt6-pdf
+            mingw-w64-ucrt-x86_64-sqlite3
             mingw-w64-ucrt-x86_64-pkg-config
             mingw-w64-ucrt-x86_64-kwidgetsaddons
             mingw-w64-ucrt-x86_64-kcoreaddons
@@ -49,10 +50,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: C:\Users\runneradmin\AppData\Local\ccache
-          key: ccache-windows-${{ github.ref_name }}-${{ github.sha }}
+          key: ccache-windows-qt6-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            ccache-windows-${{ github.ref_name }}-
-            ccache-windows-
+            ccache-windows-qt6-${{ github.ref_name }}-
+            ccache-windows-qt6-
 
       - name: Configure ccache
         shell: msys2 {0}
@@ -108,6 +109,8 @@ jobs:
             -DQET_EXPORT_PROJECT_DB=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=/ucrt64/bin/ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=/ucrt64/bin/ccache \
+            -DSQLite3_INCLUDE_DIR=/ucrt64/include \
+            -DSQLite3_LIBRARY=/ucrt64/lib/libsqlite3.dll.a \
             ..
           ninja -j"$NPROC"
 
@@ -180,6 +183,13 @@ jobs:
           cp /ucrt64/bin/libgcc_s_seh-1.dll  "$BIN/"
           cp /ucrt64/bin/libstdc++-6.dll      "$BIN/"
           cp /ucrt64/bin/libwinpthread-1.dll  "$BIN/"
+          SQLITE=$(find /ucrt64/bin -name "libsqlite3*.dll" | head -1)
+          if [ -n "$SQLITE" ]; then
+            cp "$SQLITE" "$BIN/"
+            echo "SQLite3 copied: $(basename $SQLITE)"
+          else
+            echo "WARNING: libsqlite3 not found in /ucrt64/bin/"
+          fi
 
           cp "$GITHUB_WORKSPACE/build-aux/windows/QET64.nsi"              "$NSIS_ROOT/"
           cp "$GITHUB_WORKSPACE/build-aux/windows/lang_extra.nsh"         "$NSIS_ROOT/"
@@ -187,7 +197,9 @@ jobs:
           cp "$GITHUB_WORKSPACE/build-aux/windows/lang_extra_missing.nsh" "$NSIS_ROOT/"
           cp -r "$GITHUB_WORKSPACE/build-aux/windows/nsis_base/." "$NSIS_ROOT/"
 
-          cp "$GITHUB_WORKSPACE/misc/Lancer QET_qt6.bat" "$FILES/Lancer QET_qt6.bat"
+          curl -fsSL \
+            "https://raw.githubusercontent.com/qelectrotech/qelectrotech-source-mirror/refs/heads/master/misc/Lancer%20QET_qt6.bat" \
+            -o "$FILES/Lancer QET_qt6.bat"
           cp -r "$GITHUB_WORKSPACE/elements"    "$FILES/elements"    || true
           cp -r "$GITHUB_WORKSPACE/titleblocks" "$FILES/titleblocks" || true
           cp -r "$GITHUB_WORKSPACE/examples"    "$FILES/examples"    || true
