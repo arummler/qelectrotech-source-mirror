@@ -367,10 +367,18 @@ void QETDiagramEditor::setUpActions()
 			//original, where it was easy to miss entirely; now it appears
 			//under the cursor and follows it until a click, Return, or Escape
 			//to cancel -- the same interaction as placing a new element.
-		const QPoint view_pos = dv->viewport()->mapFromGlobal(QCursor::pos());
-		const QPointF start_pos = dv->viewport()->rect().contains(view_pos)
-				? dv->mapToScene(view_pos)
-				: dv->mapToScene(dv->viewport()->rect().center());
+			//
+			//dv->lastMousePos() (an ordinary Qt mouse-move position), not
+			//QCursor::pos() (a global, OS-level cursor query): several
+			//window managers and compositors -- Wayland in particular --
+			//silently refuse that query, returning a stale or wrong
+			//position, which is exactly what made the pasted content land
+			//far from the cursor instead of under it.
+		const QPoint last_pos = dv->lastMousePos();
+		const QPoint view_pos = (last_pos.x() >= 0 && dv->viewport()->rect().contains(last_pos))
+				? last_pos
+				: dv->viewport()->rect().center();
+		const QPointF start_pos = dv->mapToScene(view_pos);
 
 		dv->diagram()->setEventInterface(
 					new DiagramEventAddPaste(dv->diagram(), start_pos));
@@ -2330,6 +2338,8 @@ void QETDiagramEditor::openBackupFiles(QList<KAutoSaveFile *> backup_files)
 			//Create the project
 		DialogWaiting::instance(this);
 
+			//QETProject takes ownership of file and deletes it, whether or not it opens
+		const QString file_name = file->managedFile().fileName();
 		QETProject *project = new QETProject(file, this);
 		if (project->state() != QETProject::Ok)
 		{
@@ -2340,7 +2350,7 @@ void QETDiagramEditor::openBackupFiles(QList<KAutoSaveFile *> backup_files)
 					tr("Échec de l'ouverture du projet", "message box title"),
 					QString(tr(
 						"Une erreur est survenue lors de l'ouverture du fichier %1.",
-						"message box content")).arg(file->managedFile().fileName()));
+						"message box content")).arg(file_name));
 			}
 			delete project;
 			DialogWaiting::dropInstance();
