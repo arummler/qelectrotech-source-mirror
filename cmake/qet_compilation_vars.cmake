@@ -297,6 +297,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/autoNum/numerotationcontextcommands.h
   ${QET_DIR}/sources/autoNum/numerotationcontext.cpp
   ${QET_DIR}/sources/autoNum/numerotationcontext.h
+  ${QET_DIR}/sources/autoNum/renumberelementscommand.cpp
+  ${QET_DIR}/sources/autoNum/renumberelementscommand.h
   ${QET_DIR}/sources/autoNum/ui/autonumberingdockwidget.cpp
   ${QET_DIR}/sources/autoNum/ui/autonumberingdockwidget.h
   ${QET_DIR}/sources/autoNum/ui/autonumberingmanagementw.cpp
@@ -307,6 +309,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/autoNum/ui/formulaautonumberingw.h
   ${QET_DIR}/sources/autoNum/ui/numparteditorw.cpp
   ${QET_DIR}/sources/autoNum/ui/numparteditorw.h
+  ${QET_DIR}/sources/autoNum/ui/renumberelementsdialog.cpp
+  ${QET_DIR}/sources/autoNum/ui/renumberelementsdialog.h
   ${QET_DIR}/sources/autoNum/ui/selectautonumw.cpp
   ${QET_DIR}/sources/autoNum/ui/selectautonumw.h
 
@@ -870,6 +874,43 @@ list(APPEND QET_SRC_FILES
   ${QET_DIR}/sources/scripting/qetscripting.cpp
   ${QET_DIR}/sources/scripting/qetscripting.h
 )
+
+if(QET_SPACEMOUSE_ENABLED)
+  list(APPEND QET_SRC_FILES
+    ${QET_DIR}/sources/spacemouse/spacemousebackend.h
+    ${QET_DIR}/sources/spacemouse/spacemousebuttonmap.cpp
+    ${QET_DIR}/sources/spacemouse/spacemousebuttonmap.h
+    ${QET_DIR}/sources/spacemouse/spacemouselistener.cpp
+    ${QET_DIR}/sources/spacemouse/spacemouselistener.h
+    ${QET_DIR}/sources/spacemouse/spacemousemotion.cpp
+    ${QET_DIR}/sources/spacemouse/spacemousemotion.h
+    ${QET_DIR}/sources/ui/configpage/spacemouseconfigpage.cpp
+    ${QET_DIR}/sources/ui/configpage/spacemouseconfigpage.h
+  )
+endif()
+
+if(QET_SPACEMOUSE_BACKEND_SPNAV_ENABLED)
+  list(APPEND QET_SRC_FILES
+    ${QET_DIR}/sources/spacemouse/spnavbackend.cpp
+    ${QET_DIR}/sources/spacemouse/spnavbackend.h
+  )
+endif()
+
+if(QET_SPACEMOUSE_BACKEND_HID_ENABLED)
+  list(APPEND QET_SRC_FILES
+    ${QET_DIR}/sources/spacemouse/hidbackend.cpp
+    ${QET_DIR}/sources/spacemouse/hidbackend.h
+    ${QET_DIR}/sources/spacemouse/spacemousehid.cpp
+    ${QET_DIR}/sources/spacemouse/spacemousehid.h
+  )
+endif()
+
+if(QET_SPACEMOUSE_BACKEND_CONNEXION_ENABLED)
+  list(APPEND QET_SRC_FILES
+    ${QET_DIR}/sources/spacemouse/connexionbackend.cpp
+    ${QET_DIR}/sources/spacemouse/connexionbackend.h
+  )
+endif()
 
 set(TS_FILES
   ${QET_DIR}/lang/qet_ar.ts
