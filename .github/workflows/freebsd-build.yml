@@ -18,19 +18,25 @@ jobs:
       matrix:
         include:
           - with_kf: OFF
+            build_kf: OFF
             kf_pkgs: ""
             pugixml: OFF
             pugixml_pkgs: "pugixml"
           - with_kf: OFF
+            build_kf: OFF
             kf_pkgs: ""
             pugixml: ON
             pugixml_pkgs: ""
           - with_kf: ON
             build_kf: OFF
             kf_pkgs: "kf6-extra-cmake-modules kf6-kcoreaddons kf6-kwidgetsaddons"
+            pugixml: ON
+            pugixml_pkgs: ""
           - with_kf: ON
             build_kf: ON
             kf_pkgs: ""
+            pugixml: ON
+            pugixml_pkgs: ""
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -51,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          sudo pkg install -y git qt6-base qt6-svg qt6-tools sqlite3  \
+          sudo pkg install -y git qt6-base qt6-pdf qt6-svg qt6-tools sqlite3  \
               cmake ninja ccache pkgconf ${{ matrix.pugixml_pkgs }} ${{ matrix.kf_pkgs }}
 
           SOURCE_DIR="$PWD/source"
@@ -61,8 +67,9 @@ jobs:
           cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_WITH_KF=${{ matrix.with_kf }} \
-            -DBUILD_WITH_KF=${{ matrix.with_kf }} \
-            -DPACKAGE_TESTS=ON
+            -DBUILD_KF=${{ matrix.build_kf }} \
+            -DPACKAGE_TESTS=ON \
+            -DBUILD_PUGIXML={{ matrix.pugixml }})
 
           cmake --build "$BUILD_DIR" 
           cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
