@@ -11,10 +11,26 @@ concurrency:
 
 jobs:
   build-freebsd:
-    name: GCC build on FreeBSD 
+    name: GCC build on FreeBSD (BUILD_WITH_KF=${{ matrix.with_kf }}, BUILD_KF=${{ matrix.build_kf }}, BUILD_PUGIXML=${{ matrix.pugixml }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      matrix:
+        include:
+          - with_kf: OFF
+            kf_pkgs: ""
+            pugixml: OFF
+            pugixml_pkgs: "pugixml"
+          - with_kf: OFF
+            kf_pkgs: ""
+            pugixml: ON
+            pugixml_pkgs: ""
+          - with_kf: ON
+            build_kf: OFF
+            kf_pkgs: "kf6-extra-cmake-modules kf6-kcoreaddons kf6-kwidgetsaddons"
+          - with_kf: ON
+            build_kf: ON
+            kf_pkgs: ""
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -35,8 +51,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          sudo pkg install -y git qt6 \
-              cmake ninja ccache pkgconf
+          sudo pkg install -y git qt6-base qt6-svg qt6-tools sqlite3  \
+              cmake ninja ccache pkgconf ${{ matrix.pugixml_pkgs }} ${{ matrix.kf_pkgs }}
 
           SOURCE_DIR="$PWD/source"
           BUILD_DIR="$PWD/build"
@@ -44,10 +60,11 @@ jobs:
 
           cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_WITH_KF=OFF \
-            -DPACKAGE_TESTS=OFF \
-            -DCMAKE_POLICY_DEFAULT_CMP0077=NEW \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 
+            -DBUILD_WITH_KF=${{ matrix.with_kf }} \
+            -DBUILD_WITH_KF=${{ matrix.with_kf }} \
+            -DPACKAGE_TESTS=ON
 
           cmake --build "$BUILD_DIR" 
           cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
+          
+          QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD_DIR" --output-on-failure
