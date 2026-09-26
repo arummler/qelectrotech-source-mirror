@@ -1,0 +1,77 @@
+name: FreeBSD Build Check with GCC
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-freebsd:
+    name: GCC build on FreeBSD (BUILD_WITH_KF=${{ matrix.with_kf }}, BUILD_KF=${{ matrix.build_kf }}, BUILD_PUGIXML=${{ matrix.pugixml }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - with_kf: OFF
+            build_kf: OFF
+            kf_pkgs: ""
+            pugixml: OFF
+            pugixml_pkgs: "pugixml"
+          - with_kf: OFF
+            build_kf: OFF
+            kf_pkgs: ""
+            pugixml: ON
+            pugixml_pkgs: ""
+          - with_kf: ON
+            build_kf: OFF
+            kf_pkgs: "kf6-extra-cmake-modules kf6-kcoreaddons kf6-kwidgetsaddons"
+            pugixml: ON
+            pugixml_pkgs: ""
+          - with_kf: ON
+            build_kf: ON
+            kf_pkgs: ""
+            pugixml: ON
+            pugixml_pkgs: ""
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          path: source
+
+      - name: Set up FreeBSD VM
+        uses: cross-platform-actions/action@v1.4.0
+        with:
+          operating_system: freebsd
+          version: '15.1'
+          usesh: true
+
+      - name: Build with GCC on FreeBSD (via VM)
+        shell: cpa.sh {0}
+        run: |
+          set -euo pipefail
+
+          sudo pkg install -y git qt6-base qt6-pdf qt6-svg qt6-tools sqlite3  \
+              cmake ninja ccache pkgconf ${{ matrix.pugixml_pkgs }} ${{ matrix.kf_pkgs }}
+
+          SOURCE_DIR="$PWD/source"
+          BUILD_DIR="$PWD/build"
+          INSTALL_DIR="$PWD/install"
+
+          cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_WITH_KF=${{ matrix.with_kf }} \
+            -DBUILD_KF=${{ matrix.build_kf }} \
+            -DPACKAGE_TESTS=ON \
+            -DBUILD_PUGIXML={{ matrix.pugixml }})
+
+          cmake --build "$BUILD_DIR" 
+          cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
+          
+          QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD_DIR" --output-on-failure

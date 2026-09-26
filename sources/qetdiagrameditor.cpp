@@ -20,7 +20,9 @@
 #include "scripting/qetscripting.h"
 #endif
 #include <QCoreApplication>
+#include <QToolButton>
 #include "ElementsCollection/elementscollectionwidget.h"
+#include "commandsearchpopup.h"
 #include "QWidgetAnimation/qwidgetanimation.h"
 #include "autoNum/ui/autonumberingdockwidget.h"
 #include "conductornumexport.h"
@@ -48,6 +50,7 @@
 #include "qeticons.h"
 #include "qetmessagebox.h"
 #include "recentfiles.h"
+#include "textgrid.h"
 #include "shortcutmanager.h"
 #include "ui/bomexportdialog.h"
 #include "ui/conductorcolortoolbutton.h"
@@ -367,10 +370,18 @@ void QETDiagramEditor::setUpActions()
 			//original, where it was easy to miss entirely; now it appears
 			//under the cursor and follows it until a click, Return, or Escape
 			//to cancel -- the same interaction as placing a new element.
-		const QPoint view_pos = dv->viewport()->mapFromGlobal(QCursor::pos());
-		const QPointF start_pos = dv->viewport()->rect().contains(view_pos)
-				? dv->mapToScene(view_pos)
-				: dv->mapToScene(dv->viewport()->rect().center());
+			//
+			//dv->lastMousePos() (an ordinary Qt mouse-move position), not
+			//QCursor::pos() (a global, OS-level cursor query): several
+			//window managers and compositors -- Wayland in particular --
+			//silently refuse that query, returning a stale or wrong
+			//position, which is exactly what made the pasted content land
+			//far from the cursor instead of under it.
+		const QPoint last_pos = dv->lastMousePos();
+		const QPoint view_pos = (last_pos.x() >= 0 && dv->viewport()->rect().contains(last_pos))
+				? last_pos
+				: dv->viewport()->rect().center();
+		const QPointF start_pos = dv->mapToScene(view_pos);
 
 		dv->diagram()->setEventInterface(
 					new DiagramEventAddPaste(dv->diagram(), start_pos));
@@ -473,6 +484,33 @@ void QETDiagramEditor::setUpActions()
 			}
 	});
 
+		//Snap step for dragged texts, as a fraction of the folio grid
+	m_text_grid_menu = new QMenu(tr("Grille des textes"), this);
+	m_text_grid_menu->setIcon(QET::Icons::Grid);
+	m_text_grid_menu->setToolTipsVisible(true);
+	m_text_grid_button = new QToolButton(this);
+	m_text_grid_button->setMenu(m_text_grid_menu);
+	m_text_grid_button->setPopupMode(QToolButton::InstantPopup);
+	m_text_grid_button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	m_text_grid_button->setToolTip(tr("Grille d'accrochage des textes déplacés à la souris.\n"
+									  "Maintenir Ctrl pendant le déplacement pour placer librement."));
+	auto text_grid_group = new QActionGroup(this);
+	for (const qreal divisor : TextGrid::divisors)
+	{
+		QAction *action = m_text_grid_menu->addAction(
+					divisor > 0 ? TextGrid::ratioLabel(divisor) : tr("Désactivée"));
+		action->setCheckable(true);
+		action->setData(divisor);
+		text_grid_group->addAction(action);
+	}
+	connect(text_grid_group, &QActionGroup::triggered, this, [](QAction *action) {
+		QSettings().setValue(TextGrid::settings_key, action->data());
+		emit QETApp::instance()->textGridChanged();
+	});
+	connect(QETApp::instance(), &QETApp::textGridChanged,
+			this, &QETDiagramEditor::updateTextGridButton);
+	updateTextGridButton();
+
 	// Draw or not the custom guides
 	m_draw_guides = new QAction ( QIcon::fromTheme("guides"), tr("Afficher les guides"), this);
 	m_draw_guides->setStatusTip(tr("Affiche ou masque les guides"));
@@ -483,6 +521,30 @@ void QETDiagramEditor::setUpActions()
 			foreach (Diagram *d, prjv->project()->diagrams()) {
 				d->setDisplayGuides(checked);
 			}
+	});
+
+		//Keep the column numbers and row letters of the folio in sight
+	m_cell_rulers = new QAction(tr("Garder les en-têtes visibles"), this);
+	m_cell_rulers->setStatusTip(tr("Garde les numéros de colonne et les lettres de ligne du folio visibles au bord de la vue"));
+	m_cell_rulers->setCheckable(true);
+	m_cell_rulers->setChecked(settings.value("diagrameditor/cell_rulers", false).toBool());
+	connect(m_cell_rulers, &QAction::triggered, [this](bool checked) {
+		QSettings().setValue("diagrameditor/cell_rulers", checked);
+		foreach (ProjectView *prjv, this->openedProjects())
+			foreach (DiagramView *dv, prjv->diagram_views())
+				dv->setCellRulersShown(checked);
+	});
+
+		//Draw the limits of the folio columns and rows across the drawing
+	m_cell_lines = new QAction(tr("Afficher les limites des cases"), this);
+	m_cell_lines->setStatusTip(tr("Trace les limites des colonnes et des lignes du folio sur le schéma, à l'écran seulement"));
+	m_cell_lines->setCheckable(true);
+	m_cell_lines->setChecked(settings.value("diagrameditor/cell_lines", false).toBool());
+	connect(m_cell_lines, &QAction::triggered, [this](bool checked) {
+		QSettings().setValue("diagrameditor/cell_lines", checked);
+		foreach (ProjectView *prjv, this->openedProjects())
+			foreach (DiagramView *dv, prjv->diagram_views())
+				dv->setCellLinesShown(checked);
 	});
 
 		//Edit current diagram properties
@@ -747,6 +809,27 @@ void QETDiagramEditor::setUpActions()
 	ShortcutManager::instance().registerAction(m_rotate_texts, "diagrameditor.rotate_texts", tr("Éditeur de schémas"), Qt::CTRL | Qt::Key_Space);
 	ShortcutManager::instance().registerAction(m_edit_selection, "diagrameditor.edit_selection", tr("Éditeur de schémas"), Qt::CTRL | Qt::Key_E);
 
+		//Type to find and run any command, as SolidWorks' "Search Commands"
+		//and the command palette of many editors. Ctrl+Shift+P, the key those
+		//editors use, is taken by the autonumbering dock; M for "menu".
+	m_command_search = new QAction(tr("Rechercher une commande…"), this);
+	m_command_search->setStatusTip(
+		tr("Tapez une partie du nom d'une commande et appuyez sur Entrée pour la lancer",
+		   "status bar tip"));
+	ShortcutManager::instance().registerAction(
+		m_command_search, "diagrameditor.command_search",
+		tr("Éditeur de schémas"), Qt::CTRL | Qt::SHIFT | Qt::Key_M);
+	connect(m_command_search, &QAction::triggered, this, [this]() {
+		if (!m_command_search_popup) {
+			m_command_search_popup = new CommandSearchPopup(this);
+		}
+		const QRect area = geometry();
+		m_command_search_popup->popUpAt(
+			area.contains(QCursor::pos()) ? QCursor::pos()
+						      : area.center());
+	});
+	addAction(m_command_search);
+
 	m_delete_selection->setStatusTip( tr("Enlève les éléments sélectionnés du folio", "status bar tip"));
 	m_rotate_selection->setStatusTip( tr("Pivote les éléments et textes sélectionnés", "status bar tip"));
 	m_rotate_group_selection->setStatusTip( tr("Pivote la sélection comme un groupe autour de son centre, au lieu de chaque élément sur place", "status bar tip"));
@@ -878,6 +961,13 @@ void QETDiagramEditor::setUpActions()
 	add_path->setCheckable(true);
 
 	connect(&m_add_item_actions_group, &QActionGroup::triggered, this, &QETDiagramEditor::addItemGroupTriggered);
+		//No default key, but an id: they can then be found by the command
+		//search and bound in the Shortcuts page, like every other command.
+	for (QAction *action : m_add_item_actions_group.actions()) {
+		ShortcutManager::instance().registerAction(
+			action, "diagrameditor.add_" + action->data().toString(),
+			tr("Éditeur de schémas"), QKeySequence());
+	}
 
 		//Depth action
 	m_depth_action_group = QET::depthActionGroup(this);
@@ -948,6 +1038,7 @@ void QETDiagramEditor::setUpToolBar()
 	view_tool_bar -> addWidget(new DiagramEditorHandlerSizeWidget(this));
 	view_tool_bar -> addSeparator();
 	view_tool_bar -> addAction(m_draw_grid);
+	view_tool_bar -> addWidget(m_text_grid_button);
 	view_tool_bar -> addAction(m_draw_guides);
 	view_tool_bar -> addWidget(m_background_color_button);
 	view_tool_bar -> addSeparator();
@@ -1030,15 +1121,16 @@ void QETDiagramEditor::setUpMenu()
 	menu_edition -> addAction(m_paste);
 	menu_edition -> addAction(m_duplicate);
 	menu_edition -> addAction(m_configure_duplicate);
+	menu_edition -> addAction(m_command_search);
 	menu_edition -> addSeparator();
 		//The same actions the "Ajouter" toolbar holds. They were toolbar-only,
 		//which left them unreachable for anyone working without a mouse: a
 		//toolbar button has no key, so text fields, images and every drawing
 		//shape simply could not be added. m_depth_action_group below has
 		//always been in both places; this brings these into line with it.
-	QMenu *menu_add_item = menu_edition -> addMenu(tr("A&jouter"));
-	menu_add_item -> setIcon(QET::Icons::Add);
-	menu_add_item -> addActions(m_add_item_actions_group.actions());
+	m_add_item_menu = menu_edition -> addMenu(tr("A&jouter"));
+	m_add_item_menu -> setIcon(QET::Icons::Add);
+	m_add_item_menu -> addActions(m_add_item_actions_group.actions());
 	menu_edition -> addSeparator();
 	menu_edition -> addActions(m_select_actions_group.actions());
 	menu_edition -> addSeparator();
@@ -1048,6 +1140,12 @@ void QETDiagramEditor::setUpMenu()
 	menu_edition -> addSeparator();
 	menu_edition -> addAction(m_edit_diagram_properties);
 	menu_edition -> addActions(m_row_column_actions_group.actions());
+		//Not added to a menu here: it exists so the folio's context menu can
+		//hold the row and column actions one level down (see
+		//DiagramView::contextMenuActions()).
+	m_row_column_menu = new QMenu(tr("Lignes et colonnes"), this);
+	m_row_column_menu -> setIcon(QET::Icons::EditTableInsertColumnRight);
+	m_row_column_menu -> addActions(m_row_column_actions_group.actions());
 	menu_edition -> addSeparator();
 	menu_edition -> addActions(m_depth_action_group->actions());
 	menu_edition -> addSeparator();
@@ -1101,7 +1199,10 @@ void QETDiagramEditor::setUpMenu()
 	menu_affichage -> addAction(m_mode_visualise);
 	menu_affichage -> addSeparator();
 	menu_affichage -> addAction(m_draw_grid);
+	menu_affichage -> addMenu(m_text_grid_menu);
 	menu_affichage -> addAction(m_draw_guides);
+	menu_affichage -> addAction(m_cell_rulers);
+	menu_affichage -> addAction(m_cell_lines);
 	menu_affichage -> addMenu(m_background_color_button->menu());
 	menu_affichage -> addSeparator();
 	menu_affichage -> addActions(m_zoom_actions_group.actions());
@@ -1933,6 +2034,8 @@ void QETDiagramEditor::slot_updateActions()
 	m_background_color_button->    setEnabled(opened_diagram);
 	m_draw_grid->                   setEnabled(opened_diagram);
 	m_draw_guides->                 setEnabled(opened_diagram);
+	m_cell_rulers->                 setEnabled(opened_diagram);
+	m_cell_lines->                  setEnabled(opened_diagram);
 
 		//Project menu
 	m_project_edit_properties     -> setEnabled(opened_project);
@@ -2330,6 +2433,8 @@ void QETDiagramEditor::openBackupFiles(QList<KAutoSaveFile *> backup_files)
 			//Create the project
 		DialogWaiting::instance(this);
 
+			//QETProject takes ownership of file and deletes it, whether or not it opens
+		const QString file_name = file->managedFile().fileName();
 		QETProject *project = new QETProject(file, this);
 		if (project->state() != QETProject::Ok)
 		{
@@ -2340,7 +2445,7 @@ void QETDiagramEditor::openBackupFiles(QList<KAutoSaveFile *> backup_files)
 					tr("Échec de l'ouverture du projet", "message box title"),
 					QString(tr(
 						"Une erreur est survenue lors de l'ouverture du fichier %1.",
-						"message box content")).arg(file->managedFile().fileName()));
+						"message box content")).arg(file_name));
 			}
 			delete project;
 			DialogWaiting::dropInstance();
@@ -3214,3 +3319,23 @@ void QETDiagramEditor::slot_runScript() {
 	QetScripting::runOnProject(script_path, project, currentDiagramView());
 }
 #endif
+
+/**
+	@brief QETDiagramEditor::updateTextGridButton
+	Show the current text grid on its toolbar button and check it in its menu.
+*/
+void QETDiagramEditor::updateTextGridButton()
+{
+	const qreal divisor = QSettings().value(TextGrid::settings_key, 1).toReal();
+	for (QAction *action : m_text_grid_menu->actions())
+	{
+		if (qFuzzyCompare(action->data().toReal() + 1, divisor + 1))
+		{
+			action->setChecked(true);
+			m_text_grid_button->setText(tr("Textes %1").arg(action->text()));
+			return;
+		}
+	}
+		//A divisor the menu does not offer, set by hand in the config file
+	m_text_grid_button->setText(tr("Textes %1").arg(TextGrid::ratioLabel(divisor)));
+}

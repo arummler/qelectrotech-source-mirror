@@ -84,12 +84,25 @@ add_test(NAME tst_diagramsortkeys COMMAND tst_diagramsortkeys)
 target_include_directories(tst_diagramsortkeys PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_diagramsortkeys PRIVATE Qt::Test)
 
+# bordercelllabels.h is header-only too.
+add_executable(tst_bordercelllabels tst_bordercelllabels.cpp)
+add_test(NAME tst_bordercelllabels COMMAND tst_bordercelllabels)
+target_include_directories(tst_bordercelllabels PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_bordercelllabels PRIVATE Qt::Test)
+
 # contactusage.h is a header-only helper holding the contact counting
 # rules, so this test builds independently of the rest of the QET sources.
 add_executable(tst_contactusage tst_contactusage.cpp)
 add_test(NAME tst_contactusage COMMAND tst_contactusage)
 target_include_directories(tst_contactusage PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_contactusage PRIVATE Qt::Test)
+
+# textgrid.h is a header-only helper holding the text snap rules, so this
+# test builds independently of the rest of the QET sources.
+add_executable(tst_textgrid tst_textgrid.cpp)
+add_test(NAME tst_textgrid COMMAND tst_textgrid)
+target_include_directories(tst_textgrid PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_textgrid PRIVATE Qt::Test)
 
 add_executable(
   tst_qetpalette
@@ -143,21 +156,30 @@ add_test(NAME tst_qetstrings COMMAND tst_qetstrings)
 target_include_directories(tst_qetstrings PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_qetstrings PRIVATE Qt::Test Qt::Widgets Qt::Xml pugixml::pugixml)
 
-# QETSql::isSingleReadOnlyStatement() -- read-only enforcement for every
-# project-database query, including the ones a .qet file carries. Compiles
-# sqlreadonly.cpp alone against its own in-memory SQLite, so the security
+# CommandSearchPopup: accent-blind matching, ranking, and that Enter runs
+# only the owning window's highlighted, enabled command.
+add_executable(
+  tst_commandsearch
+  tst_commandsearch.cpp
+  ${QET_DIR}/sources/commandsearchpopup.cpp
+  ${QET_DIR}/sources/commandsearchpopup.h
+  ${QET_DIR}/sources/shortcutmanager.cpp)
+add_test(NAME tst_commandsearch COMMAND tst_commandsearch)
+set_tests_properties(tst_commandsearch PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+target_include_directories(tst_commandsearch PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_commandsearch PRIVATE Qt::Test Qt::Widgets)
+
+# QETSql::execReadOnly() -- read-only enforcement for every project-database
+# query, including the ones a .qet file carries. Compiles sqlreadonly.cpp
+# alone against its own in-memory QSQLITE connection, so the security
 # property is checked without standing up a QETProject.
-find_package(SQLite3 REQUIRED)
-if(NOT TARGET SQLite3::SQLite3 AND TARGET SQLite::SQLite3)
-  add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
-endif()
 add_executable(
   tst_sqlreadonly
   tst_sqlreadonly.cpp
   ${QET_DIR}/sources/dataBase/sqlreadonly.cpp)
 add_test(NAME tst_sqlreadonly COMMAND tst_sqlreadonly)
 target_include_directories(tst_sqlreadonly PRIVATE ${QET_DIR}/sources)
-target_link_libraries(tst_sqlreadonly PRIVATE Qt::Test SQLite3::SQLite3)
+target_link_libraries(tst_sqlreadonly PRIVATE Qt::Test Qt::Sql)
 
 # QetSettings::scriptingEnabled() -- whether QElectroTech may run a script.
 # Compiles qetsettings.cpp alone: the setting is deliberately a plain
@@ -229,7 +251,7 @@ add_executable(
   tst_crashhandler.cpp
   ${QET_DIR}/sources/logging/crashhandler.cpp
   ${QET_DIR}/sources/logging/logring.cpp
-  ${QET_DIR}/sources/qetversion.cpp)
+  ${CMAKE_BINARY_DIR}/generated/qetversion.cpp)
 add_test(NAME tst_crashhandler COMMAND tst_crashhandler)
 target_include_directories(tst_crashhandler PRIVATE ${QET_DIR}/sources)
 # Qt::Xml because crashhandler.cpp includes qetversion.h for the header it
@@ -251,7 +273,7 @@ add_executable(
   ${QET_DIR}/sources/logging/qetlogger.cpp
   ${QET_DIR}/sources/logging/crashhandler.cpp
   ${QET_DIR}/sources/logging/logring.cpp
-  ${QET_DIR}/sources/qetversion.cpp)
+  ${CMAKE_BINARY_DIR}/generated/qetversion.cpp)
 add_test(NAME tst_crashdumps COMMAND tst_crashdumps)
 target_include_directories(tst_crashdumps PRIVATE
   ${QET_DIR}
