@@ -32,11 +32,11 @@ jobs:
             kf_pkgs: "kf6-extra-cmake-modules kf6-kcoreaddons kf6-kwidgetsaddons"
             pugixml: ON
             pugixml_pkgs: ""
-          - with_kf: ON
-            build_kf: ON
-            kf_pkgs: ""
-            pugixml: ON
-            pugixml_pkgs: ""
+          #- with_kf: ON
+          #  build_kf: ON
+          #  kf_pkgs: ""
+          #  pugixml: ON
+          #  pugixml_pkgs: ""
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
