@@ -42,9 +42,6 @@ jobs:
             sudo apt-get install -y libgl1-mesa-dev libegl1-mesa-dev
           fi
 
-          cmake --build "$BUILD_DIR"
-          cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
-
       - name: Configure, build, install
         run: |
           set -euo pipefail
@@ -55,9 +52,10 @@ jobs:
           cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_WITH_KF=OFF \
-            -DPACKAGE_TESTS=OFF \
-            -DCMAKE_POLICY_DEFAULT_CMP0077=NEW \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 
+            -DPACKAGE_TESTS=OFF
+            
+          cmake --build "$BUILD_DIR"
+          cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
 
       - name: Unit tests
         run: xvfb-run -a ctest --test-dir build --output-on-failure
