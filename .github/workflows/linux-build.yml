@@ -67,7 +67,7 @@ jobs:
         # rather than informative.
         run: |
           set +e
-          tests/ipc-regression/run.sh --binary build/qelectrotech
+          ${{ github.workspace }}/tests/ipc-regression/run.sh --binary build/qelectrotech
           status=$?
           set -e
           case $status in
