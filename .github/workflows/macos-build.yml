@@ -29,7 +29,7 @@ jobs:
 
       - name: Install Qt6 dependencies
         run: |
-          brew install qt cmake ninja ccache pkg-config
+          brew install qt cmake ninja ccache pkg-config sqlite
 
       - name: Configure, build, install
         run: |
