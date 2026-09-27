@@ -20,12 +20,14 @@
 #include "../../qetapp.h"
 #include "../../qeticons.h"
 #include "ui_generalconfigurationpage.h"
+#include "../../materiallist/materiallist.h"
 #include "../../utils/qetsettings.h"
 #include "../../utils/qetutils.h"
 #include "../../qetmessagebox.h"
 #include "../../textgrid.h"
 #include "../nokde/kcolorbutton.h"
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFontDialog>
 #include <QSettings>
 
@@ -67,6 +69,12 @@ GeneralConfigurationPage::GeneralConfigurationPage(QWidget *parent) :
 
 	ui->grid_startup_cb->setChecked(settings.value("diagrameditor/grid_display_startup", true).toBool());
 	ui->guides_startup_cb->setChecked(settings.value("diagrameditor/guides_display_startup", false).toBool());
+		//Stored as "inserts" but presented as "edits", so the default (insert)
+		//is the unchecked state -- a preference reads better as an opt-out.
+	ui->m_collection_dblclick_edits->setChecked(!settings.value("elementscollection/double-click-inserts", true).toBool());
+	ui->m_collection_search_flat_cb->setChecked(settings.value("elementscollection/search-flat-list", true).toBool());
+	ui->m_context_toolbar_cb->setChecked(settings.value("diagrameditor/context_toolbar", true).toBool());
+	ui->m_mouse_gestures_cb->setChecked(settings.value("diagrameditor/mouse_gestures", true).toBool());
 	ui->DiagramEditor_xGrid_sb->setValue(settings.value("diagrameditor/Xgrid", 10).toInt());
 	ui->DiagramEditor_yGrid_sb->setValue(settings.value("diagrameditor/Ygrid", 10).toInt());
 	for (const qreal divisor : TextGrid::divisors)
@@ -97,6 +105,7 @@ GeneralConfigurationPage::GeneralConfigurationPage(QWidget *parent) :
 	else
 		ui->m_use_windows_mode_rb->setChecked(true);
 	ui->m_zoom_out_beyond_folio->setChecked(settings.value("diagrameditor/zoom-out-beyond-of-folio", false).toBool());
+	ui->m_conductor_properties_panel->setChecked(settings.value("diagrameditor/conductor_properties_panel", false).toBool());
 	ui->m_use_gesture_trackpad->setChecked(settings.value("diagramview/gestures", false).toBool());
 	ui->m_save_label_paste->setChecked(settings.value("diagramcommands/erase-label-on-copy", true).toBool());
 	ui->m_enable_scripting->setChecked(QetSettings::scriptingEnabled());
@@ -221,6 +230,17 @@ GeneralConfigurationPage::GeneralConfigurationPage(QWidget *parent) :
 		ui->m_user_macros_path_cb->blockSignals(false);
 	}
 
+		//MATERIAL FILE
+	path = MaterialList::configuredPath();
+	ui->m_material_list_path_le->setText(path);
+	if (path.isEmpty())
+	{
+		ui->m_material_list_path_le->setPlaceholderText(
+			tr("Non configuré (par défaut : %1)",
+			   "hint shown in the material file field when no file is configured yet")
+				.arg(MaterialList::defaultPath()));
+	}
+
 	fillLang();	
 }
 
@@ -290,10 +310,15 @@ void GeneralConfigurationPage::applyConf()
 	settings.setValue("diagrameditor/viewmode", view_mode) ;
 	settings.setValue("diagrameditor/highlight-integrated-elements", ui->m_highlight_integrated_elements->isChecked());
 	settings.setValue("diagrameditor/zoom-out-beyond-of-folio", ui->m_zoom_out_beyond_folio->isChecked());
+	settings.setValue("diagrameditor/conductor_properties_panel", ui->m_conductor_properties_panel->isChecked());
 	settings.setValue("diagrameditor/autosave-interval", ui->m_autosave_sb->value());
 
 	settings.setValue("diagrameditor/grid_display_startup", ui->grid_startup_cb->isChecked());
 	settings.setValue("diagrameditor/guides_display_startup", ui->guides_startup_cb->isChecked());
+	settings.setValue("elementscollection/double-click-inserts", !ui->m_collection_dblclick_edits->isChecked());
+	settings.setValue("elementscollection/search-flat-list", ui->m_collection_search_flat_cb->isChecked());
+	settings.setValue("diagrameditor/context_toolbar", ui->m_context_toolbar_cb->isChecked());
+	settings.setValue("diagrameditor/mouse_gestures", ui->m_mouse_gestures_cb->isChecked());
 		//Grid step and key navigation
 	settings.setValue("diagrameditor/Xgrid", ui->DiagramEditor_xGrid_sb->value());
 	settings.setValue("diagrameditor/Ygrid", ui->DiagramEditor_yGrid_sb->value());
@@ -400,6 +425,12 @@ void GeneralConfigurationPage::applyConf()
 	if (path != settings.value("elements-collections/macros-path").toString()) {
 		QETApp::resetCollectionsPath();
 	}
+
+		//MATERIAL FILE
+		//Unlike the collections, the material file is a plain file, it is
+		//kept as chosen even when it doesn't exist yet : the user may well
+		//point QElectroTech at a file he intends to write later.
+	MaterialList::setConfiguredPath(ui->m_material_list_path_le->text().trimmed());
 }
 
 /**
@@ -603,6 +634,70 @@ void GeneralConfigurationPage::on_m_user_macros_path_cb_currentIndexChanged(int 
 			ui->m_user_macros_path_cb->setCurrentIndex(0);
 		}
 	}
+}
+
+/**
+	@brief GeneralConfigurationPage::on_m_material_list_browse_pb_clicked
+	Let the user pick an existing material file.
+*/
+void GeneralConfigurationPage::on_m_material_list_browse_pb_clicked()
+{
+	QString start_dir = ui->m_material_list_path_le->text();
+	start_dir = start_dir.isEmpty()
+			? QETApp::documentDir()
+			: QFileInfo(start_dir).absolutePath();
+
+	const QString path = QFileDialog::getOpenFileName(
+		this,
+		tr("Sélectionner le fichier de la liste de matériaux"),
+		start_dir,
+		tr("Fichiers csv (*.csv)"));
+
+	if (!path.isEmpty()) {
+		ui->m_material_list_path_le->setText(path);
+	}
+}
+
+/**
+	@brief GeneralConfigurationPage::on_m_material_list_create_pb_clicked
+	Create the material file with its header line, so the columns are
+	known before the user fills them from his spreadsheet.
+*/
+void GeneralConfigurationPage::on_m_material_list_create_pb_clicked()
+{
+	QString path = ui->m_material_list_path_le->text();
+	path = path.isEmpty()
+			? MaterialList::defaultPath()
+			: QFileInfo(path).absolutePath() + QLatin1Char('/') + MaterialList::defaultFileName();
+
+	path = QFileDialog::getSaveFileName(
+		this,
+		tr("Créer le fichier de la liste de matériaux"),
+		path,
+		tr("Fichiers csv (*.csv)"));
+	if (path.isEmpty()) {
+		return;
+	}
+	if (QFileInfo(path).suffix().isEmpty()) {
+		path += QStringLiteral(".csv");
+	}
+
+		//An existing file is kept as it is : this button creates the
+		//header, it never overwrites a catalogue.
+	if (MaterialList::isEmptyFile(path))
+	{
+		QString error;
+		if (!MaterialList::createFile(path, &error))
+		{
+			QET::QetMessageBox::critical(this,
+										 tr("Création impossible"),
+										 tr("Impossible de créer le fichier :\n%1\n%2")
+											.arg(path, error));
+			return;
+		}
+	}
+
+	ui->m_material_list_path_le->setText(path);
 }
 
 void GeneralConfigurationPage::on_m_indi_text_font_pb_clicked()

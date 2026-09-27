@@ -25,6 +25,7 @@
 #include <QCloseEvent>
 #include <QDir>
 #include <QMdiArea>
+#include <QPointer>
 #include <QSignalMapper>
 #include <QUndoGroup>
 
@@ -45,6 +46,7 @@ class ElementsLocation;
 class RecentFiles;
 class DiagramPropertiesEditorDockWidget;
 class ElementsCollectionWidget;
+class ElementPickerPopup;
 class CommandSearchPopup;
 class AutoNumberingDockWidget;
 class TerminalNumberingDialog;
@@ -120,6 +122,7 @@ class QETDiagramEditor : public QETMainWindow
 		void selectGroupTriggered    (QAction *action);
 		void addItemGroupTriggered   (QAction *action);
 		void selectionGroupTriggered (QAction *action);
+		void alignGroupTriggered     (QAction *action);
 		void rowColumnGroupTriggered (QAction *action);
 		void slot_updateActions();
 		void slot_updateUndoStack();
@@ -128,6 +131,12 @@ class QETDiagramEditor : public QETMainWindow
 		void slot_updatePasteAction();
 		void slot_updateWindowsMenu();
 		void slot_updateAutoNumDock();
+		void insertElementFromCollection(const ElementsLocation &location);
+		void insertLastElement();
+		void rememberPlacedElement(const ElementsLocation &location);
+		void showElementPicker();
+		void showShortcutBar();
+		bool repeatLastCommand();
 		void generateTerminalBlock();
 		void setWindowedMode();
 		void setTabbedMode();
@@ -175,15 +184,18 @@ class QETDiagramEditor : public QETMainWindow
 		*m_edit_diagram_properties, ///< Show a dialog to edit diagram properties
 		*m_conductor_reset,         ///< Reset paths of selected conductors
 		*m_cut,                     ///< Cut selection to clipboard
-		*m_copy;                    ///< Copy selection to clipboard
+		*m_copy,                    ///< Copy selection to clipboard
+		*m_insert_last_element = nullptr; ///< Place the last placed element again
 		
 		QActionGroup
 		m_row_column_actions_group, /// Action related to add/remove rows/column in diagram
 		m_selection_actions_group,  ///Action related to edit a selected item
+		m_align_actions_group,      ///Action related to align the selected items
 		*m_depth_action_group = nullptr;
 
 		QMenu
 		*m_add_item_menu = nullptr,   ///< Submenu of m_add_item_actions_group
+		*m_align_menu = nullptr,      ///< Submenu of m_align_actions_group
 		*m_row_column_menu = nullptr; ///< Submenu of m_row_column_actions_group
 	
 	private:
@@ -244,6 +256,8 @@ class QETDiagramEditor : public QETMainWindow
 		*m_rotate_texts,		///< Direct selected text items to a specific angle
 		*m_find_element,		///< Find the selected element in the panel
 		*m_group_selected_texts = nullptr,
+		*m_group_selection = nullptr,   ///< Group the selected items (#1070)
+		*m_ungroup_selection = nullptr, ///< Ungroup the selected groups
 		*m_close_file,			///< Close current project file
 		*m_save_file,			///< Save current project
 		*m_save_file_as,		///< Save current project as a specific file
@@ -270,9 +284,19 @@ class QETDiagramEditor : public QETMainWindow
 		*m_qdw_elmt_collection,
 		*qdw_undo; /// Dock for the undo list
 
+		ElementPickerPopup *elementPicker();
+		QAction *m_show_element_picker = nullptr;
+		QAction *m_show_shortcut_bar = nullptr;
+		QAction *m_repeat_last_command = nullptr;
+			/// What Enter on the folio repeats
+		QPointer<QAction> m_last_command;
+		void setLastCommand(QAction *action);
+		ElementPickerPopup *m_element_picker = nullptr; ///< Built on first use
 		QAction *m_command_search = nullptr;
 		CommandSearchPopup *m_command_search_popup = nullptr; ///< Built on first use
 		ElementsCollectionWidget *m_element_collection_widget;
+			/// Last element placed from the collection, for "insert last"
+		ElementsLocation m_last_inserted_element;
 			
 		DiagramPropertiesEditorDockWidget *m_selection_properties_editor;
 			/// Elements panel

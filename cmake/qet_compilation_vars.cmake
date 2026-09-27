@@ -73,6 +73,7 @@ set(QET_RES_FILES
   ${QET_DIR}/sources/editor/ui/terminaleditor.ui
   ${QET_DIR}/sources/ElementsCollection/ui/renamedialog.ui
   ${QET_DIR}/sources/factory/ui/addtabledialog.ui
+  ${QET_DIR}/sources/materiallist/materialselectiondialog.ui
   ${QET_DIR}/sources/NameList/ui/namelistdialog.ui
   ${QET_DIR}/sources/NameList/ui/namelistwidget.ui
   ${QET_DIR}/sources/print/projectprintwindow.ui
@@ -192,6 +193,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/configdialog.h
   ${QET_DIR}/sources/createdxf.cpp
   ${QET_DIR}/sources/createdxf.h
+  ${QET_DIR}/sources/dxfexport.cpp
+  ${QET_DIR}/sources/dxfexport.h
   ${QET_DIR}/sources/dxfpaintdevice.cpp
   ${QET_DIR}/sources/dxfpaintdevice.h
   ${QET_DIR}/sources/diagramcommands.cpp
@@ -232,6 +235,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/exportpropertieswidget.h
   ${QET_DIR}/sources/genericpanel.cpp
   ${QET_DIR}/sources/genericpanel.h
+  ${QET_DIR}/sources/itemgroups.cpp
+  ${QET_DIR}/sources/itemgroups.h
   ${QET_DIR}/sources/lastusedstyle.cpp
   ${QET_DIR}/sources/lastusedstyle.h
   ${QET_DIR}/sources/machine_info.cpp
@@ -285,6 +290,12 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/recentfiles.h
   ${QET_DIR}/sources/shortcutmanager.cpp
   ${QET_DIR}/sources/shortcutmanager.h
+  ${QET_DIR}/sources/shortcutbarsettings.cpp
+  ${QET_DIR}/sources/shortcutbarsettings.h
+  ${QET_DIR}/sources/diagramcontexttoolbar.cpp
+  ${QET_DIR}/sources/diagramcontexttoolbar.h
+  ${QET_DIR}/sources/diagramgestureoverlay.cpp
+  ${QET_DIR}/sources/diagramgestureoverlay.h
   ${QET_DIR}/sources/commandsearchpopup.cpp
   ${QET_DIR}/sources/commandsearchpopup.h
   ${QET_DIR}/sources/titleblockcell.cpp
@@ -319,6 +330,7 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/autoNum/ui/selectautonumw.cpp
   ${QET_DIR}/sources/autoNum/ui/selectautonumw.h
 
+  ${QET_DIR}/sources/dataBase/legacyelementtypes.h
   ${QET_DIR}/sources/dataBase/projectdatabase.cpp
   ${QET_DIR}/sources/dataBase/projectdatabase.h
   ${QET_DIR}/sources/dataBase/sqlreadonly.cpp
@@ -453,6 +465,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ElementsCollection/elementpreviewdelegate.h
   ${QET_DIR}/sources/ElementsCollection/elementscollectionmodel.cpp
   ${QET_DIR}/sources/ElementsCollection/elementscollectionmodel.h
+  ${QET_DIR}/sources/ElementsCollection/elementpickerpopup.cpp
+  ${QET_DIR}/sources/ElementsCollection/elementpickerpopup.h
   ${QET_DIR}/sources/ElementsCollection/elementscollectionwidget.cpp
   ${QET_DIR}/sources/ElementsCollection/elementscollectionwidget.h
   ${QET_DIR}/sources/ElementsCollection/elementslocation.cpp
@@ -708,6 +722,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ui/borderpropertieswidget.h
   ${QET_DIR}/sources/ui/compositetexteditdialog.cpp
   ${QET_DIR}/sources/ui/compositetexteditdialog.h
+  ${QET_DIR}/sources/ui/conductorpropertieseditorwidget.cpp
+  ${QET_DIR}/sources/ui/conductorpropertieseditorwidget.h
   ${QET_DIR}/sources/ui/contactgroupselectiondialog.cpp
   ${QET_DIR}/sources/ui/contactgroupselectiondialog.h
   ${QET_DIR}/sources/ui/conductorpropertiesdialog.cpp
@@ -799,6 +815,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ui/configpage/guidespropertieswidget.h
   ${QET_DIR}/sources/ui/configpage/shortcutsconfigpage.cpp
   ${QET_DIR}/sources/ui/configpage/shortcutsconfigpage.h
+  ${QET_DIR}/sources/ui/configpage/shortcutbarconfigpage.cpp
+  ${QET_DIR}/sources/ui/configpage/shortcutbarconfigpage.h
 
   ${QET_DIR}/sources/undocommand/addelementtextcommand.cpp
   ${QET_DIR}/sources/undocommand/addelementtextcommand.h
@@ -824,6 +842,10 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/undocommand/removediagramcommand.h
   ${QET_DIR}/sources/undocommand/setautonumcontextcommand.cpp
   ${QET_DIR}/sources/undocommand/setautonumcontextcommand.h
+  ${QET_DIR}/sources/undocommand/groupitemscommand.cpp
+  ${QET_DIR}/sources/undocommand/groupitemscommand.h
+  ${QET_DIR}/sources/undocommand/alignselectioncommand.cpp
+  ${QET_DIR}/sources/undocommand/alignselectioncommand.h
   ${QET_DIR}/sources/undocommand/rotateselectioncommand.cpp
   ${QET_DIR}/sources/undocommand/rotateselectioncommand.h
   ${QET_DIR}/sources/undocommand/promoteshapecommand.cpp
@@ -841,6 +863,13 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/utils/qetsettings.h
   ${QET_DIR}/sources/utils/qetutils.cpp
   ${QET_DIR}/sources/utils/qetutils.h
+
+  ${QET_DIR}/sources/materiallist/materialentrydialog.cpp
+  ${QET_DIR}/sources/materiallist/materialentrydialog.h
+  ${QET_DIR}/sources/materiallist/materiallist.cpp
+  ${QET_DIR}/sources/materiallist/materiallist.h
+  ${QET_DIR}/sources/materiallist/materialselectiondialog.cpp
+  ${QET_DIR}/sources/materiallist/materialselectiondialog.h
 
   ${QET_DIR}/sources/xml/terminalstripitemxml.cpp
   ${QET_DIR}/sources/xml/terminalstripitemxml.h

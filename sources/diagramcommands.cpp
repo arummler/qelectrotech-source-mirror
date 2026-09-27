@@ -18,10 +18,14 @@
 #include "diagramcommands.h"
 
 #include "diagram.h"
+#include "itemgroups.h"
 #include "qetgraphicsitem/conductortextitem.h"
+#include "qetgraphicsitem/diagramimageitem.h"
 #include "qetgraphicsitem/dynamicelementtextitem.h"
 #include "qetgraphicsitem/element.h"
 #include "qetgraphicsitem/elementtextitemgroup.h"
+#include "qetgraphicsitem/independenttextitem.h"
+#include "qetgraphicsitem/qetshapeitem.h"
 #include "qetinformation.h"
 #include "qgimanager.h"
 
@@ -99,6 +103,15 @@ void PasteDiagramCommand::redo()
 		const QList <Conductor *> all_pasted_conductors = content.conductors();
 		for (Conductor *c : all_pasted_conductors) {
 			c -> newUuid();
+		}
+		for (IndependentTextItem *t : std::as_const(content.m_text_fields)) {
+			t -> newUuid();
+		}
+		for (DiagramImageItem *i : std::as_const(content.m_images)) {
+			i -> newUuid();
+		}
+		for (QetShapeItem *s : std::as_const(content.m_shapes)) {
+			s -> newUuid();
 		}
 
 		//this is the first paste, we do some actions for the new element
@@ -203,6 +216,27 @@ void PasteDiagramCommand::redo()
 					c -> setProperties(cp);
 				}
 			}
+		}
+
+			//Pasted groups become new groups: the members of one source
+			//group all get the same new uuid, never the source's, or the
+			//copy would join the original's group. After the elements got
+			//their own uuids: the database row is found by uuid, and before
+			//that it would have been the source element's row.
+		QHash<QUuid, QUuid> renewed_groups;
+		for (QGraphicsItem *item : content.items(DiagramContent::Elements
+												 | DiagramContent::TextFields
+												 | DiagramContent::Images
+												 | DiagramContent::Shapes))
+		{
+			const QUuid source_group = ItemGroups::groupOf(item);
+			if (source_group.isNull()) {
+				continue;
+			}
+			if (!renewed_groups.contains(source_group)) {
+				renewed_groups.insert(source_group, QUuid::createUuid());
+			}
+			diagram -> setItemGroup(item, renewed_groups.value(source_group));
 		}
 	}
 	else

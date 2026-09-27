@@ -29,6 +29,10 @@
 #include <QMessageBox>
 #include "qetgraphicsitem/element.h"
 #include "qetgraphicsitem/dynamicelementtextitem.h"
+#include "qetgraphicsitem/diagramimageitem.h"
+#include "qetgraphicsitem/independenttextitem.h"
+#include "qetgraphicsitem/qetshapeitem.h"
+#include "itemgroups.h"
 #include "qetinformation.h"
 
 /*
@@ -800,6 +804,18 @@ void ElementsPanelWidget::duplicateDiagram()
 					}
 				}
 			}
+			else if (auto text = dynamic_cast<IndependentTextItem *>(item)) {
+				// Not a database key (yet), but a script or the MCP server
+				// addresses a text, image or shape by it: a copy must not
+				// answer to its source's name.
+				text->newUuid();
+			}
+			else if (auto image = dynamic_cast<DiagramImageItem *>(item)) {
+				image->newUuid();
+			}
+			else if (auto shape = dynamic_cast<QetShapeItem *>(item)) {
+				shape->newUuid();
+			}
 			else if (Conductor *cond = dynamic_cast<Conductor *>(item)) {
 				// Same reasoning for conductors: conductor.uuid is the PRIMARY
 				// KEY of the conductor table, and its insert is a plain INSERT,
@@ -817,6 +833,20 @@ void ElementsPanelWidget::duplicateDiagram()
 					cond->setProperties(cp);
 				}
 			}
+		}
+
+			// Groups too: a group of the copy is its own, so selecting it
+			// is the same on both folios but the database tells them apart.
+		QHash<QUuid, QUuid> renewed_groups;
+		for (QGraphicsItem *item : new_diagram->items()) {
+			const QUuid source_group = ItemGroups::groupOf(item);
+			if (source_group.isNull()) {
+				continue;
+			}
+			if (!renewed_groups.contains(source_group)) {
+				renewed_groups.insert(source_group, QUuid::createUuid());
+			}
+			new_diagram->setItemGroup(item, renewed_groups.value(source_group));
 		}
 	}
 

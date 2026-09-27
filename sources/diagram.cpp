@@ -42,7 +42,9 @@
 #include "qetinformation.h"
 #include "qetproject.h"
 #include "diagramsortkeys.h"
+#include "itemgroups.h"
 #include "textgrid.h"
+#include <QGraphicsView>
 #include <QTextStream>
 #include <algorithm>
 #include <climits>
@@ -121,6 +123,7 @@ namespace {
 		for (T *item : items) {
 			Entry entry{stack_rank.value(item, INT_MAX), QString(),
 						item->toXml(document)};
+			ItemGroups::write(entry.xml, item);
 				// Only an item the stacking query missed needs a tiebreak.
 			if (entry.rank == INT_MAX) {
 				QTextStream stream(&entry.xml_text);
@@ -210,6 +213,7 @@ Diagram::Diagram(QETProject *project) :
 	connect(&border_and_titleblock,
 		&BorderTitleBlock::needTitleBlockTemplate,
 		this, &Diagram::setTitleBlockTemplate);
+
 	connect(&border_and_titleblock,
 		&BorderTitleBlock::informationChanged,
 		this, &Diagram::titleChanged);
@@ -432,7 +436,9 @@ void Diagram::mousePressEvent(QGraphicsSceneMouseEvent *event)
 		}
 	}
 
+	rememberSelection();
 	QGraphicsScene::mousePressEvent(event);
+	completeGroupSelection();
 }
 
 /**
@@ -471,6 +477,9 @@ void Diagram::mouseReleaseEvent(QGraphicsSceneMouseEvent *event)
 	}
 
 	QGraphicsScene::mouseReleaseEvent(event);
+		//A click on an already selected item changes the selection on
+		//release, not on press (Ctrl toggles it, a plain click keeps only it).
+	completeGroupSelection();
 }
 
 /**
@@ -1245,8 +1254,9 @@ QDomDocument Diagram::toXml(bool whole_content, bool is_copy_command) {
 	if (!list_elements.isEmpty()) {
 		auto dom_elements = document.createElement(QStringLiteral("elements"));
 		for (auto elmt : list_elements) {
-			dom_elements.appendChild(elmt->toXml(document,
-								 table_adr_id));
+			QDomElement dom_element = elmt->toXml(document, table_adr_id);
+			ItemGroups::write(dom_element, elmt);
+			dom_elements.appendChild(dom_element);
 			// If copy is active we have to undo the changes we have made during creating(filling) 'list_elements'
 			if(is_copy_command && (elmt->linkType() == Element::Slave || elmt->linkType()&Element::AllReport))
 				restoreText(elmt);
@@ -1666,9 +1676,33 @@ bool Diagram::fromXml(QDomElement &document,
 			delete nvel_elmt;
 			qDebug() << QStringLiteral("Diagram::fromXml() : Le chargement des parametres d'un element a echoue");
 		} else {
+			ItemGroups::setGroup(nvel_elmt, ItemGroups::read(element_xml));
 			added_elements << nvel_elmt;
 		}
 	}
+
+		//Texts, images and shapes written before they carried a uuid (or
+		//carrying one already used on this folio, from a hand-edited file)
+		//get one derived from the folio uuid, their kind and their order in
+		//the file, so that loading the same file twice gives the same uuids.
+		//A random one would be a different identity on every load, and
+		//toXml() writes it out, which is what #754 was for conductors.
+		//Only for a folio being loaded: a paste renews them all anyway.
+	QSet<QUuid> used_uuids;
+	auto settle_uuid = [&](auto *item, const QDomElement &xml,
+						   const QString &kind, int index) {
+		const QUuid persisted(xml.attribute(QStringLiteral("uuid")));
+		if (consider_informations
+			&& (persisted.isNull() || used_uuids.contains(persisted))) {
+			item->setUuid(QUuid::createUuidV5(
+							  m_uuid,
+							  QStringLiteral("%1\n%2\n%3")
+							  .arg(kind)
+							  .arg(index)
+							  .arg(persisted.toString())));
+		}
+		used_uuids.insert(item->uuid());
+	};
 
 		// Load text
 	QList<IndependentTextItem *> added_texts;
@@ -1677,6 +1711,8 @@ bool Diagram::fromXml(QDomElement &document,
 											   QStringLiteral("input"))) {
 		IndependentTextItem *iti = new IndependentTextItem();
 		iti -> fromXml(text_xml);
+		settle_uuid(iti, text_xml, QStringLiteral("input"), added_texts.size());
+		ItemGroups::setGroup(iti, ItemGroups::read(text_xml));
 		addItem(iti);
 		added_texts << iti;
 	}
@@ -1688,6 +1724,8 @@ bool Diagram::fromXml(QDomElement &document,
 												QStringLiteral("image"))) {
 		DiagramImageItem *dii = new DiagramImageItem ();
 		dii -> fromXml(image_xml);
+		settle_uuid(dii, image_xml, QStringLiteral("image"), added_images.size());
+		ItemGroups::setGroup(dii, ItemGroups::read(image_xml));
 		addItem(dii);
 		added_images << dii;
 	}
@@ -1699,6 +1737,8 @@ bool Diagram::fromXml(QDomElement &document,
 												QStringLiteral("shape"))) {
 		QetShapeItem *dii = new QetShapeItem (QPointF(0,0));
 		dii -> fromXml(shape_xml);
+		settle_uuid(dii, shape_xml, QStringLiteral("shape"), added_shapes.size());
+		ItemGroups::setGroup(dii, ItemGroups::read(shape_xml));
 		addItem(dii);
 		added_shapes << dii;
 	}
@@ -1892,6 +1932,13 @@ void Diagram::addItem(QGraphicsItem *item)
 			m_project->dataBase()->addConductor(conductor);
 			break;
 		}
+		case QetShapeItem::Type:
+		case IndependentTextItem::Type:
+		case DiagramImageItem::Type:
+		{
+			m_project->dataBase()->addDrawingItem(item);
+			break;
+		}
 		default: {break;}
 	}
 }
@@ -1921,6 +1968,13 @@ void Diagram::removeItem(QGraphicsItem *item)
 			conductor->terminal1->removeConductor(conductor);
 			conductor->terminal2->removeConductor(conductor);
 			m_project->dataBase()->removeConductor(conductor);
+			break;
+		}
+		case QetShapeItem::Type:
+		case IndependentTextItem::Type:
+		case DiagramImageItem::Type:
+		{
+			m_project->dataBase()->removeDrawingItem(item);
 			break;
 		}
 		default: {break;}
@@ -2085,6 +2139,75 @@ void Diagram::selectAllTextFields()
 	}
 	blockSignals(false);
 	emit selectionChanged();
+}
+
+/**
+	@brief Diagram::setItemGroup
+	Put @a item in @a group, or take it out of its group if @a group is
+	null, and keep its row in the project database in step.
+	@param item
+	@param group
+*/
+void Diagram::setItemGroup(QGraphicsItem *item, const QUuid &group)
+{
+	ItemGroups::setGroup(item, group);
+	if (m_project) {
+		m_project->dataBase()->itemGroupChanged(item);
+	}
+}
+
+/**
+	@brief Diagram::completeGroupSelection
+	Make the selection whole groups again after the user changed it with a
+	click, see ItemGroups::completeSelection(). Called from the mouse
+	handlers and, when a rubber band is released, from DiagramView -- not
+	on every selectionChanged(): code that selects items itself (export,
+	search, Tab cycling) deselects and reselects one item at a time and
+	must not have groups pulled back in behind it.
+	Left alone while a rubber band is being dragged, which reselects exactly
+	what it covers on every mouse step.
+*/
+void Diagram::completeGroupSelection()
+{
+	for (QGraphicsView *view : views()) {
+		if (!view->rubberBandRect().isNull()) {
+			return;
+		}
+	}
+
+	QList<QGraphicsItem *> previous;
+	for (const QPointer<QGraphicsObject> &item : std::as_const(m_previous_selection)) {
+		if (item) {
+			previous << item.data();
+		}
+	}
+
+		//One selectionChanged() for the whole group, not one per member:
+		//the properties dock rebuilds on each.
+	blockSignals(true);
+	const bool changed = ItemGroups::completeSelection(
+				this, previous,
+				QApplication::keyboardModifiers().testFlag(Qt::ControlModifier));
+	blockSignals(false);
+	if (changed) {
+		emit selectionChanged();
+	}
+	rememberSelection();
+}
+
+/**
+	@brief Diagram::rememberSelection
+	Keep the current selection, the "before" completeGroupSelection() needs
+	to tell a member being Ctrl+clicked off.
+*/
+void Diagram::rememberSelection()
+{
+	m_previous_selection.clear();
+	for (QGraphicsItem *item : selectedItems()) {
+		if (QGraphicsObject *object = item->toGraphicsObject()) {
+			m_previous_selection << object;
+		}
+	}
 }
 
 /**
