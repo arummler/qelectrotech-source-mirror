@@ -73,29 +73,14 @@ BUILD_DIR="$SOURCE_DIR/build-macos-$ARCH"
 INSTALL_DIR="$SOURCE_DIR/install-macos-$ARCH"
 APPNAME="QElectroTech"
 
-VERSION="$(tr -d '[:space:]' < "$SOURCE_DIR/QET_VERSION")"
-RELEASE="$(tr -d '[:space:]' < "$SOURCE_DIR/QET_RELEASE")"
-HEAD="$(git -C "$SOURCE_DIR" rev-parse --short HEAD)"
+# One rule for every package (file name, embedded version, release page):
+# build-aux/qet-version.sh. Provides VERSION, RELEASE, REV, SHORT_SHA,
+# DISPLAY_VERSION, ... A shallow clone needs QET_REV set.
+eval "$(bash "$SOURCE_DIR/build-aux/qet-version.sh" --source-dir "$SOURCE_DIR" --format env)"
 
-case "$RELEASE" in
-  dev)
-    SUFFIX="-r${HEAD}"
-    ;;
-  alpha1|alpha2|alpha3)
-    SUFFIX="-${RELEASE}"
-    ;;
-  stable)
-    SUFFIX=""
-    ;;
-  *)
-    echo "ERROR: unrecognized RELEASE value '$RELEASE' (expected dev, alpha1, alpha2, alpha3, or stable)" >&2
-    exit 1
-    ;;
-esac
+DMG_NAME="${APPNAME}-${DISPLAY_VERSION}-${ARCH}.dmg"
 
-DMG_NAME="${APPNAME}-${VERSION}${SUFFIX}-${ARCH}.dmg"
-
-echo "=== Packaging $APPNAME $VERSION r$HEAD ($ARCH, Qt$QT_VERSION_MAJOR) ==="
+echo "=== Packaging $APPNAME $DISPLAY_VERSION ($ARCH, Qt$QT_VERSION_MAJOR) ==="
 echo "    sign=$DO_SIGN  notarize=$DO_NOTARIZE  non-interactive=$NON_INTERACTIVE"
 
 # ---------------------------------------------------------------------------
@@ -362,7 +347,7 @@ notarize() {
 
 if [ "$DO_NOTARIZE" = true ]; then
   if [ "$NON_INTERACTIVE" = false ]; then
-    echo -e "\033[1;31mNotarize the .app \"${APPNAME}-${VERSION}-r${HEAD}\"? n/Y\033[m"
+    echo -e "\033[1;31mNotarize the .app \"${APPNAME}-${DISPLAY_VERSION}\"? n/Y\033[m"
     read -r ans
     [ "$ans" = "n" ] && DO_NOTARIZE_APP=false || DO_NOTARIZE_APP=true
   else

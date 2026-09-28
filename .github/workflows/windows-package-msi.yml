@@ -24,20 +24,14 @@ jobs:
     #  github.event_name == 'workflow_dispatch' ||
     #  github.event.workflow_run.conclusion == 'success'
 
-    concurrency:
-      group: windows-package-msi-${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: true  
-
+    # Publishing is done centrally in package.yml; this job only builds,
+    # signs and uploads an artifact, so it needs no write access to the repo.
     permissions:
-      contents: write
-      pages: write
+      contents: read
       id-token: write  # Required by SignPath
 
     env:
       SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
-
-    outputs:
-      qt6_msi: ${{ steps.export.outputs.msi_name_qt6 }}
 
     steps:
       # ----------------------------------------------------------------
@@ -69,53 +63,18 @@ jobs:
       # ----------------------------------------------------------------
       - name: Extract version
         id: version
-        shell: pwsh
+        shell: bash
         run: |
-          $ver = (Get-Content "QET_VERSION" -Raw).Trim()
-          $release = (Get-Content "QET_RELEASE" -Raw).Trim()
-
-          # Short SHA and cumulative revision count -- still computed
-          # unconditionally, since VERSION_MSI's monotonic numeric
-          # requirement is independent of RELEASE stage.
-          $sha = git rev-parse --short HEAD 2>$null
-          if (-not $sha) { $sha = "unknown" }
-          $count = git rev-list HEAD --count 2>$null
-          $rev = [int]$count + 473
-
-          # MSI Version only compares Major.Minor.Build (the 4th field is
-          # ignored by Windows Installer for upgrade detection), so we
-          # inject rev into Build to force a real increase between builds
-          # and trigger MajorUpgrade's automatic uninstall.
-          $verParts = $ver -split '\.'
-          $verMsi = "$($verParts[0]).$($verParts[1]).$($rev % 65535)"
-
-          # Human-readable suffix depends on RELEASE:
-          #   dev            -> -r<rev>-<sha>  (nightly, no fixed tag exists)
-          #   alpha1/2/3     -> -alpha1/2/3    (tagged, no hash needed)
-          #   stable         -> nothing        (tagged, final release)
-          switch ($release) {
-            "dev"    { $suffix = "-r${rev}-${sha}" }
-            "alpha1" { $suffix = "-alpha1" }
-            "alpha2" { $suffix = "-alpha2" }
-            "alpha3" { $suffix = "-alpha3" }
-            "stable" { $suffix = "" }
-            default {
-              Write-Error "Unrecognized RELEASE value '$release' (expected dev, alpha1, alpha2, alpha3, or stable)"
-              exit 1
-            }
-          }
-
-          $verDisplay = "${ver}${suffix}_x86_64-win64"
-
-          echo "VERSION_MSI=$verMsi"         >> $env:GITHUB_OUTPUT
-          echo "VERSION_DISPLAY=$verDisplay" >> $env:GITHUB_OUTPUT
-          Write-Host "Version MSI     : $verMsi"
-          Write-Host "Version display : $verDisplay"
-
-          $qtArgs = ""
-
-          echo "QT_ARGS=$qtArgs" >> $env:GITHUB_OUTPUT
-          Write-Host "Qt platform args: '$qtArgs'"
+          set -euo pipefail
+          # One rule for every package: build-aux/qet-version.sh
+          # (MSI_VERSION puts the revision into the third field, the only one
+          # Windows Installer compares for MajorUpgrade besides major/minor.)
+          eval "$(bash build-aux/qet-version.sh --format env)"
+          echo "VERSION_MSI=${MSI_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "VERSION_DISPLAY=${DISPLAY_VERSION}_x86_64-win64" >> "$GITHUB_OUTPUT"
+          echo "QT_ARGS=" >> "$GITHUB_OUTPUT"
+          echo "Version MSI     : ${MSI_VERSION}"
+          echo "Version display : ${DISPLAY_VERSION}_x86_64-win64"
 
       # ----------------------------------------------------------------
       # 4. Install WiX v7, accept EULA and install WixUI extension
@@ -278,7 +237,7 @@ jobs:
       # continue-on-error once the certificate is confirmed active.
       - name: Sign MSI via SignPath
         id: sign
-        if: github.repository == 'qelectrotech/qelectrotech-source-mirror' && env.SIGNPATH_API_TOKEN != ''
+        if: github.repository == 'qelectrotech/qelectrotech-source-mirror' && github.event_name != 'pull_request' && env.SIGNPATH_API_TOKEN != ''
         continue-on-error: true
         uses: signpath/github-action-submit-signing-request@v2
         with:

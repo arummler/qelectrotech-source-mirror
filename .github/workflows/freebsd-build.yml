@@ -1,13 +1,21 @@
 name: FreeBSD Build Check with GCC
 
+# Runs on its own for every pull request and every push to master, and is
+# also called from package.yml, which makes it a mandatory gate before any
+# packaging (nightly, tag, manual run).
 on:
   pull_request:
   push:
     branches: [master]
+  workflow_call:
+  workflow_dispatch:
 
+# On their own (pull request / push) a newer run replaces an older one. When
+# called from package.yml (nightly, tag, manual) every run gets a group of its
+# own, so nothing is cancelled and nothing collides with the caller's group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && format('freebsd-build-{0}', github.ref) || format('freebsd-build-{0}-{1}', github.ref, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
   build-freebsd:
@@ -74,4 +82,4 @@ jobs:
           cmake --build "$BUILD_DIR" 
           cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
           
-          QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD_DIR" --output-on-failure
+          QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD_DIR" --output-on-failure --no-tests=error

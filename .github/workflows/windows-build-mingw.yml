@@ -1,13 +1,21 @@
 name: Windows build with Mingw
 
+# Runs on its own for every pull request and every push to master, and is
+# also called from package.yml, which makes it a mandatory gate before any
+# packaging (nightly, tag, manual run).
 on:
   pull_request:
   push:
     branches: [master]
+  workflow_call:
+  workflow_dispatch:
 
+# On their own (pull request / push) a newer run replaces an older one. When
+# called from package.yml (nightly, tag, manual) every run gets a group of its
+# own, so nothing is cancelled and nothing collides with the caller's group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && format('windows-build-mingw-{0}', github.ref) || format('windows-build-mingw-{0}-{1}', github.ref, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
   build-windows-qt6:
@@ -64,7 +72,7 @@ jobs:
             -DQT_VERSION_MAJOR=6 \
             -DBUILD_WITH_KF=ON \
             -DBUILD_KF=OFF \
-            -DPACKAGE_TESTS=OFF \
+            -DPACKAGE_TESTS=ON \
             -DCMAKE_POLICY_DEFAULT_CMP0077=NEW \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DQET_EXPORT_PROJECT_DB=ON \
@@ -72,4 +80,11 @@ jobs:
             -DSQLite3_LIBRARY=/ucrt64/lib/libsqlite3.dll.a 
           cmake --build "$buildDir"
 
-
+      - name: Unit tests
+        shell: msys2 {0}
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          WORKSPACE_PATH=$(cygpath -m "${{ github.workspace }}")
+          ctest --test-dir "${WORKSPACE_PATH}/build" --output-on-failure --no-tests=error

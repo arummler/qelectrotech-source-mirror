@@ -1,157 +1,393 @@
-name: Package and upload
+name: CI and packaging
+
+# Nightly build, release tags and manual runs. Pull requests and pushes to
+# master are covered by the *-build workflows, which trigger themselves.
+#
+#   version    computes every version string (build-aux/qet-version.sh) and
+#              decides what this run does
+#   check-*    the compile + unit-test workflows, called as reusable workflows.
+#              Mandatory here: a nightly, a tag and a manual run only package
+#              a commit that compiles and passes its tests
+#   gate       green only when every check-* is green
+#   build-*    one reusable workflow per package
+#   publish    uploads what was built and regenerates the download page
+#
+# What each trigger does
+#   nightly (schedule)    checks -> packages -> development release + page.
+#                         Skipped when master has no new commit since the last
+#                         development release. TOLERANT: a package that failed
+#                         is marked as failed on the download page and the
+#                         others are still uploaded.
+#   tag pushed            checks -> packages -> release. STRICT: nothing is
+#                         published unless every package was built.
+#   manual run            packages (default) after the checks. Publishes only
+#                         if "publish" is ticked and the ref is master (like the
+#                         nightly) or a tag (like a tag push).
+#   pull request          never publishes. Packages only with the "ci-package"
+#                         label; the checks are then the ones that already run
+#                         on the pull request, they are not repeated.
+#
+# Recovery
+#   * A failed job: "Re-run failed jobs" on the run. Jobs that succeeded are not
+#     rebuilt; publishing only starts once everything it needs is green.
+#   * A tag whose release must be redone (e.g. after fixing the signing setup):
+#     Actions -> "CI and packaging" -> Run workflow -> choose the TAG as the
+#     ref, tick "publish". Publishing is idempotent: the release of that tag
+#     is updated, files with the same name are replaced.
 
 on:
+  schedule:
+    - cron: '30 2 * * *'      # nightly, 02:30 UTC
   workflow_dispatch:
-  pull_request:  
+    inputs:
+      package:
+        description: "Build all packages after the checks pass"
+        type: boolean
+        default: true
+      publish:
+        description: "Publish (master: development release + page, tag: the release)"
+        type: boolean
+        default: false
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
   push:
-    branches: [master]
     tags: ['*']
 
+# One run per ref. Pull requests: a new push replaces the old run. Nightly and
+# tags: runs queue instead of cancelling each other, so a run that is already
+# uploading is never killed half way through.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
-  verify-version:
-    if: startsWith(github.ref, 'refs/tags/')
+  # ---------------------------------------------------------------------------
+  # Version + plan
+  # ---------------------------------------------------------------------------
+  version:
+    name: Version and plan
     runs-on: ubuntu-latest
     outputs:
-      prerelease: ${{ steps.release_type.outputs.prerelease }}
-      tag_name: ${{ steps.release_type.outputs.tag_name }}
+      skip: ${{ steps.plan.outputs.skip }}
+      checks: ${{ steps.plan.outputs.checks }}
+      package: ${{ steps.plan.outputs.package }}
+      publish: ${{ steps.plan.outputs.publish }}
+      strict: ${{ steps.plan.outputs.strict }}
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+      display_version: ${{ steps.version.outputs.display_version }}
+      label: ${{ steps.version.outputs.label }}
+      rev: ${{ steps.version.outputs.rev }}
+      tag_name: ${{ steps.version.outputs.tag_name }}
+      prerelease: ${{ steps.version.outputs.is_prerelease }}
     steps:
       - uses: actions/checkout@v7
-      - name: Verify tag matches VERSION and VERSION_TYPE
+        with:
+          fetch-depth: 0
+
+      - name: Compute version strings
+        id: version
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME#v}"
-          FILE_VERSION="$(tr -d '[:space:]' < QET_VERSION)"
-          FILE_TYPE="$(tr -d '[:space:]' < QET_RELEASE)"
+          bash build-aux/qet-version.sh --format github
+          bash build-aux/qet-version.sh --format env | sed 's/^/  /'
 
-          if [[ "$TAG" == *-* ]]; then
-            TAG_VERSION="${TAG%%-*}"
-            TAG_TYPE="${TAG#*-}"
-          else
-            TAG_VERSION="$TAG"
-            TAG_TYPE="stable"
-          fi
-
-          if [ "$TAG_VERSION" != "$FILE_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match QET_VERSION file ($FILE_VERSION)"
-            exit 1
-          fi
-          if [ "$TAG_TYPE" != "$FILE_TYPE" ]; then
-            echo "::error::Tag type ($TAG_TYPE) does not match QET_RELEASE file ($FILE_TYPE)"
-            exit 1
-          fi
-          if [ "$FILE_TYPE" = "dev" ]; then
-            echo "::error::VERSION_TYPE is still 'dev' -- bump it before tagging a release"
-            exit 1
-          fi
-      - name: Determine prerelease status
-        id: release_type
+      # Fails within seconds, before any runner-hour is spent.
+      - name: Verify tag matches QET_VERSION and QET_RELEASE
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          EXPECTED_TAG: ${{ steps.version.outputs.tag_name }}
+          RELEASE: ${{ steps.version.outputs.release }}
         run: |
           set -euo pipefail
-          TYPE="$(tr -d '[:space:]' < QET_RELEASE)"
-          echo "prerelease=$([ "$TYPE" != "stable" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "tag_name=v$(tr -d '[:space:]' < QET_VERSION)$([ "$TYPE" != "stable" ] && echo "-$TYPE")" >> "$GITHUB_OUTPUT"
-          
+          if [ "$RELEASE" = "dev" ]; then
+            echo "::error::QET_RELEASE is still 'dev' -- bump it before tagging a release"
+            exit 1
+          fi
+          # a leading "v" is optional in the tag
+          if [ "${GITHUB_REF_NAME#v}" != "${EXPECTED_TAG#v}" ]; then
+            echo "::error::Tag '${GITHUB_REF_NAME}' does not match QET_VERSION/QET_RELEASE, which say '${EXPECTED_TAG}'"
+            exit 1
+          fi
+
+      - name: Decide what this run does
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          DISPATCH_PACKAGE: ${{ inputs.package }}
+          DISPATCH_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          skip=false; checks=true; package=false; publish=false; strict=false
+          is_tag=false; [[ "$REF" == refs/tags/* ]] && is_tag=true
+
+          case "$EVENT" in
+            pull_request)
+              # These checks already run on the pull request on their own.
+              checks=false
+              # Adding some unrelated label must not restart the pipeline.
+              if [ "$ACTION" = "labeled" ] && [ "$LABEL_NAME" != "ci-package" ]; then skip=true; fi
+              if echo "$PR_LABELS" | jq -e 'index("ci-package")' >/dev/null; then package=true; fi
+              ;;
+            push)                      # tags only, see "on:"
+              package=true; publish=true; strict=true
+              ;;
+            schedule)
+              package=true; publish=true
+              ;;
+            workflow_dispatch)
+              if [ "$DISPATCH_PACKAGE" = "true" ]; then package=true; fi
+              if [ "$DISPATCH_PUBLISH" = "true" ]; then
+                if $is_tag; then
+                  publish=true; strict=true          # redo the release of a tag
+                elif [ "$REF" = "refs/heads/master" ]; then
+                  publish=true
+                else
+                  echo "::warning::Publishing is only possible from master or a tag; running without it."
+                fi
+              fi
+              ;;
+          esac
+          # Publishing needs the packages.
+          if [ "$publish" = "true" ]; then package=true; fi
+
+          # Nightly: nothing new since the last development release -> nothing to do.
+          if [ "$EVENT" = "schedule" ]; then
+            last_tag="$(gh release list --repo "$REPO" --limit 100 --json tagName,createdAt \
+              --jq '[.[] | select(.tagName | startswith("development-"))] | sort_by(.createdAt) | last | .tagName // empty' || true)"
+            if [ -n "$last_tag" ]; then
+              last_sha="$(gh api "repos/$REPO/releases/tags/$last_tag" --jq .target_commitish || true)"
+              if [ "$last_sha" = "$SHA" ]; then
+                echo "Nothing new since $last_tag ($SHA): nightly skipped."
+                skip=true
+              fi
+            fi
+          fi
+
+          {
+            echo "skip=$skip"
+            echo "checks=$checks"
+            echo "package=$package"
+            echo "publish=$publish"
+            echo "strict=$strict"
+          } >> "$GITHUB_OUTPUT"
+          echo "skip=$skip checks=$checks package=$package publish=$publish strict=$strict"
+
+  # ---------------------------------------------------------------------------
+  # Compile + unit-test checks
+  # ---------------------------------------------------------------------------
+  check-linux:
+    name: Linux
+    needs: version
+    if: needs.version.outputs.skip != 'true' && needs.version.outputs.checks == 'true'
+    uses: ./.github/workflows/linux-build.yml
+
+  check-freebsd:
+    name: FreeBSD
+    needs: version
+    if: needs.version.outputs.skip != 'true' && needs.version.outputs.checks == 'true'
+    uses: ./.github/workflows/freebsd-build.yml
+
+  check-macos:
+    name: macOS
+    needs: version
+    if: needs.version.outputs.skip != 'true' && needs.version.outputs.checks == 'true'
+    uses: ./.github/workflows/macos-build.yml
+
+  check-windows-msvc:
+    name: Windows MSVC
+    needs: version
+    if: needs.version.outputs.skip != 'true' && needs.version.outputs.checks == 'true'
+    uses: ./.github/workflows/windows-build-msvc.yml
+
+  check-windows-mingw:
+    name: Windows MinGW
+    needs: version
+    if: needs.version.outputs.skip != 'true' && needs.version.outputs.checks == 'true'
+    uses: ./.github/workflows/windows-build-mingw.yml
+
+  # Green only when every check above is green (a skipped or cancelled check
+  # counts as not green). On pull requests the checks are not repeated here, so
+  # the gate passes without them.
+  gate:
+    name: Build and test gate
+    needs: [version, check-linux, check-freebsd, check-macos, check-windows-msvc, check-windows-mingw]
+    if: ${{ !cancelled() && needs.version.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: All checks must have succeeded
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          CHECKS: ${{ needs.version.outputs.checks }}
+        run: |
+          set -euo pipefail
+          if [ "$CHECKS" != "true" ]; then
+            echo "Pull request: the checks run on their own, not repeated here."
+            exit 0
+          fi
+          echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.key | startswith("check-")) | "\(.key): \(.value.result)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          bad="$(echo "$NEEDS_JSON" | jq -r '[to_entries[] | select(.key | startswith("check-")) | select(.value.result != "success") | .key] | join(", ")')"
+          if [ -n "$bad" ]; then
+            echo "::error::Not green: $bad"
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Packages. Each needs the gate; none needs any other package except the MSI,
+  # which is built from the Windows portable tree.
+  # ---------------------------------------------------------------------------
   build-macos:
-    needs: verify-version
-    if: always() && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped')  
-    name: Build MacOS DMG
+    name: macOS DMG
+    needs: [version, gate]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && needs.version.outputs.package == 'true' }}
     uses: ./.github/workflows/macos-package-dmg.yml
     secrets: inherit
 
   build-appimage:
-    needs: verify-version
-    if: always() && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped')  
-    name: Build Linux AppImage
+    name: Linux AppImage
+    needs: [version, gate]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && needs.version.outputs.package == 'true' }}
     uses: ./.github/workflows/linux-package-appimage.yml
     secrets: inherit
-    
+
   build-windows-exe:
-    needs: verify-version
-    if: always() && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped')  
-    name: Build Windows Exe/Portable
+    name: Windows exe + portable
+    needs: [version, gate]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && needs.version.outputs.package == 'true' }}
     uses: ./.github/workflows/windows-package-exe.yml
     secrets: inherit
-    
+
   build-windows-msi:
-    needs: build-windows-exe
-    if: always() && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped')
-    name: Build Windows MSI
+    name: Windows MSI
+    # needs.version and needs.gate must be listed too: a job can only read the
+    # results of jobs it needs. (The old condition read needs.verify-version
+    # without needing it, so it never held and the MSI was never built.)
+    needs: [version, gate, build-windows-exe]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && needs.version.outputs.package == 'true' && needs.build-windows-exe.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write   # SignPath
     uses: ./.github/workflows/windows-package-msi.yml
     secrets: inherit
-    
+
   build-linux-snap:
-    needs: verify-version
-    if: always() && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped')
-    name: Build Linux snap
+    name: Linux snap
+    needs: [version, gate]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && needs.version.outputs.package == 'true' }}
     uses: ./.github/workflows/linux-package-snap.yml
     secrets: inherit
-    
+
   build-linux-flatpack:
-    needs: verify-version
-    if: always() && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped')
-    name: Build Linux flatpack
+    name: Linux flatpak
+    needs: [version, gate]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && needs.version.outputs.package == 'true' }}
     uses: ./.github/workflows/linux-package-flatpack.yml
     secrets: inherit
-    
+
   build-docs:
-    needs: verify-version
-    if: always() && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped')
-    name: Build Doxygen HTML docs
+    name: Doxygen HTML docs
+    needs: [version, gate]
+    if: ${{ !cancelled() && needs.gate.result == 'success' && needs.version.outputs.package == 'true' }}
+    permissions:
+      contents: write   # requested by the job inside auto-doxygen.yml
     uses: ./.github/workflows/auto-doxygen.yml
     secrets: inherit
 
+  # ---------------------------------------------------------------------------
+  # Publish
+  # ---------------------------------------------------------------------------
   publish-release:
-    name: Upload all builds to github page and update HTML
-    needs: [verify-version, build-macos, build-appimage, build-windows-exe, build-windows-msi, build-linux-snap, build-linux-flatpack, build-docs]
-    if: |
-      always() &&
-      (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped') &&
-      needs.build-macos.result == 'success' &&
-      needs.build-appimage.result == 'success' &&
-      needs.build-windows-exe.result == 'success' &&
-      needs.build-windows-msi.result == 'success' &&
-      needs.build-linux-snap.result == 'success' &&
-      needs.build-linux-flatpack.result == 'success'  &&
-      needs.build-docs.result == 'success'
+    name: Upload builds and update the download page
+    needs: [version, gate, build-macos, build-appimage, build-windows-exe, build-windows-msi, build-linux-snap, build-linux-flatpack, build-docs]
+    # !cancelled(), not always(): a failed package must NOT stop the others
+    # from being published, but a cancelled run (a newer one replaced it) must.
+    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.gate.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pages: write
       id-token: write
     steps:
-      - name: Determine release target (tag vs development)
-        id: target
+      - name: Decide what can be published
+        id: status
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          STRICT: ${{ needs.version.outputs.strict }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          # job id -> result, for the packages only
+          echo "$NEEDS_JSON" | jq -c 'with_entries(select(.key | startswith("build-"))) | with_entries(.value |= .result)' > "$RUNNER_TEMP/package-status.json"
+          echo "status=$(cat "$RUNNER_TEMP/package-status.json")" >> "$GITHUB_OUTPUT"
+          jq -r 'to_entries[] | "| \(.key) | \(.value) |"' "$RUNNER_TEMP/package-status.json" > "$RUNNER_TEMP/package-status.md"
+
+          {
+            echo "### Packages"
+            echo "| job | result |"
+            echo "|---|---|"
+            cat "$RUNNER_TEMP/package-status.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          failed="$(jq -r '[to_entries[] | select(.value != "success") | .key] | join(", ")' "$RUNNER_TEMP/package-status.json")"
+          built="$(jq -r '[to_entries[] | select(.value == "success" and .key != "build-docs")] | length' "$RUNNER_TEMP/package-status.json")"
+
+          if [ "$STRICT" = "true" ] && [ -n "$failed" ]; then
+            echo "::error::A tagged release needs every package. Not built: $failed"
+            exit 1
+          fi
+          if [ "$built" -eq 0 ]; then
+            echo "::error::No package was built, nothing to publish."
+            exit 1
+          fi
+          if [ -n "$failed" ]; then
+            echo "::warning::Publishing without: $failed (marked as failed on the download page)"
+          fi
+
+      - name: Determine release target (tag vs development)
+        id: target
+        env:
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF" == refs/tags/* ]]; then
             echo "is_tag=true" >> "$GITHUB_OUTPUT"
-            echo "tag_name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-            echo "release_name=QElectroTech ${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=${{ needs.verify-version.outputs.prerelease }}" >> "$GITHUB_OUTPUT"
+            echo "tag_name=$REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "release_name=QElectroTech $REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           else
             # A unique tag per run (never reused) so GitHub's auto-generated
             # "Source code" archive can never be served stale from codeload's
             # per-tag cache -- a fresh tag has never been cached before.
             # generate-page.py's stable download page is what users actually
             # bookmark, so a rotating tag name underneath it is invisible to them.
-            DEVELOPMENT_TAG="development-$(date -u +%Y%m%d-%H%M)-${{ github.run_number }}"
-            DEVELOPMENT_NAME="Development release - $(date -u '+%Y-%m-%d %H:%M')"
             echo "is_tag=false" >> "$GITHUB_OUTPUT"
-            echo "tag_name=$DEVELOPMENT_TAG" >> "$GITHUB_OUTPUT"
-            echo "release_name=$DEVELOPMENT_NAME" >> "$GITHUB_OUTPUT"
+            echo "tag_name=development-$(date -u +%Y%m%d-%H%M)-${RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "release_name=Development release - $(date -u '+%Y-%m-%d %H:%M')" >> "$GITHUB_OUTPUT"
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
           fi
 
       # Only the artifacts actually meant to be released end up in artifacts/.
       # A plain, unfiltered `download-artifact` here would also sweep up
       # internal/intermediate artifacts that other jobs produce purely to pass
-      # data between themselves within the same run -- namely the raw
-      # `nsis_root/files/` tree (qelectrotech-windows-portable[-qt6], an
-      # uncompressed folder used only as input to the MSI job) and the
-      # pre-signing `qelectrotech-windows-msi-unsigned-*` artifact. Both would
-      # otherwise show up as hundreds of loose files on the release.
+      # data between themselves within the same run -- the raw `nsis_root/files/`
+      # tree (qelectrotech-windows-portable) and the pre-signing MSI.
+      #
+      # continue-on-error: a package that failed simply has no artifact; that
+      # must not stop the others (the failure is shown on the page instead).
       - name: Download macOS DMG artifacts
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -159,6 +395,7 @@ jobs:
           merge-multiple: true
 
       - name: Download Linux AppImage artifacts
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -166,6 +403,7 @@ jobs:
           merge-multiple: true
 
       - name: Download Windows installer artifacts
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -173,20 +411,26 @@ jobs:
           merge-multiple: true
 
       - name: Download Windows portable zip artifacts
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           pattern: qelectrotech-*-readytouse
           merge-multiple: true
 
-      - name: Download Windows MSI artifacts (signed only)
+      # Exact name, no wildcard: "qelectrotech-windows-msi*" also matched the
+      # pre-signing "qelectrotech-windows-msi-unsigned", and both contain a
+      # file of the same name, so which one ended up on the release was luck.
+      - name: Download Windows MSI artifact (the signed / final one)
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: qelectrotech-windows-msi*
+          pattern: qelectrotech-windows-msi
           merge-multiple: true
-          
+
       - name: Download Snap artifacts
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -194,66 +438,61 @@ jobs:
           merge-multiple: true
 
       - name: Download Flatpak artifacts
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           pattern: qelectrotech-flatpak-*
           merge-multiple: true
-          
+
       - name: Download Doxygen HTML docs
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          name: doxygen-html
           path: gh-pages/docs
+          pattern: doxygen-html
+          merge-multiple: true
 
-      - name: Delete previous development releases
-        if: steps.target.outputs.is_tag == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check there is something to upload
         run: |
           set -euo pipefail
-          REPO="${{ github.repository }}"
-          gh release list --repo "$REPO" --limit 100 --json tagName \
-            --jq '.[] | select(.tagName == "development" or (.tagName | startswith("development-"))) | .tagName' \
-          | while IFS= read -r OLD_TAG; do
-              echo "Deleting old development release: $OLD_TAG"
-              gh release delete "$OLD_TAG" --repo "$REPO" --yes --cleanup-tag || true
-            done
+          mkdir -p artifacts
+          echo "Files to upload:"
+          ls -la artifacts
+          [ -n "$(ls -A artifacts)" ] || { echo "::error::artifacts/ is empty"; exit 1; }
 
       - name: Build release body
-        id: body
+        env:
+          IS_TAG: ${{ steps.target.outputs.is_tag }}
+          TAG_NAME: ${{ steps.target.outputs.tag_name }}
+          DISPLAY_VERSION: ${{ needs.version.outputs.display_version }}
+          COMMIT: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           set -euo pipefail
-          if [ "${{ steps.target.outputs.is_tag }}" = "true" ]; then
-            BODY="$(cat <<'EOF'
-          ## QElectroTech ${{ steps.target.outputs.tag_name }}
-
-          | | |
-          |---|---|
-          | **Commit** | ${{ github.sha }} |
-          | **Run** | https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }} |
-
-          EOF
-          )"
-          else
-            BODY="$(cat <<'EOF'
-          🔧 **Automated development build** — may be unstable.
-
-          | | |
-          |---|---|
-          | **Commit** | ${{ github.sha }} |
-          | **Run** | https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }} |
-          | **Date** | ${{ github.event.head_commit.timestamp }} |
-
-          > ⚠️ This is a development version; it introduces new features you might want to test, but may have bugs that have not yet been identified yet.
-          > For stable releases, see the [Releases page](https://github.com/${{ github.repository }}/releases).
-
-          EOF
-          )"
-          fi
+          failed="$(jq -r '[to_entries[] | select(.value != "success") | .key] | join(", ")' "$RUNNER_TEMP/package-status.json")"
           {
             echo "text<<RELEASE_BODY_EOF"
-            echo "$BODY"
+            if [ "$IS_TAG" = "true" ]; then
+              echo "## QElectroTech $TAG_NAME"
+            else
+              echo "🔧 **Automated development build $DISPLAY_VERSION** — may be unstable."
+            fi
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Commit** | $COMMIT |"
+            echo "| **Run** | $RUN_URL |"
+            echo
+            if [ -n "$failed" ]; then
+              echo "> ❌ **Not part of this build (failed, see the run):** $failed"
+              echo
+            fi
+            if [ "$IS_TAG" != "true" ]; then
+              echo "> ⚠️ This is a development version; it introduces new features you might want to test, but may have bugs that have not yet been identified yet."
+              echo "> For stable releases, see the [Releases page]($REPO_URL/releases)."
+            fi
             echo "RELEASE_BODY_EOF"
           } >> "$GITHUB_ENV"
 
@@ -275,74 +514,30 @@ jobs:
           sparse-checkout: build-aux/generate-page.py
           sparse-checkout-cone-mode: false
 
+      # The asset -> button mapping lives in generate-page.py (it is tested
+      # there); this step only hands over the file names and the run status.
       - name: Generate download page (index.html)
         if: steps.target.outputs.is_tag == 'false'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.target.outputs.tag_name }}
+          PACKAGE_STATUS: ${{ steps.status.outputs.status }}
+          DISPLAY_VERSION: ${{ needs.version.outputs.display_version }}
         run: |
           set -euo pipefail
           REPO="${{ github.repository }}"
+          ASSET_NAMES="$(gh release view "$TAG_NAME" --repo "$REPO" --json assets --jq '.assets[].name')"
+          BASE_URL="https://github.com/$REPO/releases/download/$TAG_NAME"
 
-          ASSETS=$(gh release view "${{ steps.target.outputs.tag_name }}" --repo "$REPO" --json assets --jq '.assets[].name')
-          BASE="https://github.com/$REPO/releases/download/${{ steps.target.outputs.tag_name }}"
-
-          EXE_NAME=$(echo "$ASSETS" | grep '\.exe$' | head -1)
-          ZIP_NAME=$(echo "$ASSETS" | grep '\.zip$' | head -1)
-          MSI_NAME=$(echo "$ASSETS" | grep '\.msi$' | head -1 || echo "")
-
-          INSTALLER_URL=""
-          PORTABLE_URL=""
-          MSI_URL=""
-          [ -n "$EXE_NAME" ] && EXE_URL="$BASE/$EXE_NAME"
-          [ -n "$ZIP_NAME" ] && ZIP_URL="$BASE/$ZIP_NAME"
-          [ -n "$MSI_NAME" ] && MSI_URL="$BASE/$MSI_NAME"
-
-          DMG_ARM64_NAME=$(echo "$ASSETS"  | grep 'arm64' | grep '\.dmg$' | head -1 || echo "")
-          DMG_X8664_NAME=$(echo "$ASSETS"  | grep 'x86_64' | grep '\.dmg$' | head -1 || echo "")
-          
-          DMG_ARM64_URL=""
-          DMG_X8664_URL=""
-          [ -n "$DMG_ARM64_NAME" ] && DMG_ARM64_URL="$BASE/$DMG_ARM64_NAME"
-          [ -n "$DMG_X8664_NAME" ] && DMG_X8664_URL="$BASE/$DMG_X8664_NAME"
-
-          APPIMAGE_X8664_NAME=$(echo "$ASSETS" | grep -v 'aarch64' | grep '\.AppImage$' | head -1 || echo "")
-          APPIMAGE_AARCH64_NAME=$(echo "$ASSETS" | grep 'aarch64' | grep '\.AppImage$' | head -1 || echo "")
-
-          APPIMAGE_X8664_URL=""
-          APPIMAGE_AARCH64_URL=""
-          [ -n "$APPIMAGE_X8664_NAME" ] && APPIMAGE_X8664_URL="$BASE/$APPIMAGE_X8664_NAME"
-          [ -n "$APPIMAGE_AARCH64_NAME" ] && APPIMAGE_AARCH64_URL="$BASE/$APPIMAGE_AARCH64_NAME"
-          
-          SNAP_AMD64_NAME=$(echo "$ASSETS" | grep 'amd64' | grep '\.snap$' | head -1 || echo "")
-          SNAP_ARM64_NAME=$(echo "$ASSETS" | grep 'arm64' | grep '\.snap$' | head -1 || echo "")
-
-          SNAP_AMD64_URL=""
-          SNAP_ARM64_URL=""
-          [ -n "$SNAP_AMD64_NAME" ] && SNAP_AMD64_URL="$BASE/$SNAP_AMD64_NAME"
-          [ -n "$SNAP_ARM64_NAME" ] && SNAP_ARM64_URL="$BASE/$SNAP_ARM64_NAME"
-
-          FLATPAK_X8664_NAME=$(echo "$ASSETS" | grep -v 'aarch64' | grep '\.flatpak$' | head -1 || echo "")
-          FLATPAK_AARCH64_NAME=$(echo "$ASSETS" | grep 'aarch64' | grep '\.flatpak$' | head -1 || echo "")
-
-          FLATPAK_X8664_URL=""
-          FLATPAK_AARCH64_URL=""
-          [ -n "$FLATPAK_X8664_NAME" ] && FLATPAK_X8664_URL="$BASE/$FLATPAK_X8664_NAME"
-          [ -n "$FLATPAK_AARCH64_NAME" ] && FLATPAK_AARCH64_URL="$BASE/$FLATPAK_AARCH64_NAME"
-
-          export INSTALLER_URL PORTABLE_URL MSI_URL
-          export DMG_ARM64_URL DMG_X8664_URL 
-          export APPIMAGE_X8664_URL APPIMAGE_AARCH64_URL
-          export SNAP_AMD64_URL SNAP_ARM64_URL
-          export FLATPAK_X8664_URL FLATPAK_AARCH64_URL
-                    
-          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          SHA="${{ github.sha }}"
           SHORT="${SHA:0:7}"
-          DATE=$(date -u '+%Y-%m-%d %H:%M UTC')
+          DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
           RUN_URL="https://github.com/$REPO/actions/runs/${{ github.run_id }}"
           RUN_NUMBER="${{ github.run_number }}"
-          RELEASE_TAG="${{ steps.target.outputs.tag_name }}"
+          RELEASE_TAG="$TAG_NAME"
 
+          export ASSET_NAMES BASE_URL PACKAGE_STATUS DISPLAY_VERSION
           export DATE SHORT REPO SHA RUN_URL RUN_NUMBER RELEASE_TAG
 
           python3 source/build-aux/generate-page.py
@@ -361,8 +556,31 @@ jobs:
       - name: Deploy to GitHub Pages
         if: steps.target.outputs.is_tag == 'false'
         uses: actions/deploy-pages@v5
+
+      # Last, and never the new one: the previous version deleted the old
+      # development releases BEFORE publishing, so a failed publish left no
+      # development release at all.
+      - name: Delete previous development releases
+        if: steps.target.outputs.is_tag == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_TAG: ${{ steps.target.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          gh release list --repo "$REPO" --limit 100 --json tagName \
+            --jq '.[] | select(.tagName == "development" or (.tagName | startswith("development-"))) | .tagName' \
+          | while IFS= read -r OLD_TAG; do
+              [ "$OLD_TAG" = "$NEW_TAG" ] && continue
+              echo "Deleting old development release: $OLD_TAG"
+              gh release delete "$OLD_TAG" --repo "$REPO" --yes --cleanup-tag || true
+            done
+
+  # ---------------------------------------------------------------------------
+  # After a tagged release: back to "dev"
+  # ---------------------------------------------------------------------------
   reset-version-type:
-    needs: [verify-version, publish-release]   # after the release actually succeeded
+    needs: [version, publish-release]   # after the release actually succeeded
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
@@ -395,7 +613,7 @@ jobs:
             exit 0
           fi
           echo "dev" > QET_RELEASE
-          
+
       - name: Commit and push
         run: |
           set -euo pipefail
@@ -408,4 +626,3 @@ jobs:
           git add QET_RELEASE publiccode.yml
           git commit -m "Reset QET_RELEASE to dev after ${{ github.ref_name }} release"
           git push origin master
-

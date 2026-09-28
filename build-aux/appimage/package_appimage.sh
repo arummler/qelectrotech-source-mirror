@@ -64,29 +64,14 @@ APPDIR="$SOURCE_DIR/AppDir-$ARCH"
 TOOLS_DIR="$SOURCE_DIR/appimage-tools-$ARCH"
 APPNAME="QElectroTech"
 
-VERSION="$(tr -d '[:space:]' < "$SOURCE_DIR/QET_VERSION")"
-RELEASE="$(tr -d '[:space:]' < "$SOURCE_DIR/QET_RELEASE")"
-HEAD="$(git -C "$SOURCE_DIR" rev-parse --short HEAD)"
+# One rule for every package (file name, embedded version, release page):
+# build-aux/qet-version.sh. Provides VERSION, RELEASE, REV, SHORT_SHA,
+# DISPLAY_VERSION, ... A shallow clone needs QET_REV set.
+eval "$(bash "$SOURCE_DIR/build-aux/qet-version.sh" --source-dir "$SOURCE_DIR" --format env)"
 
-case "$RELEASE" in
-  dev)
-    SUFFIX="-r${HEAD}"
-    ;;
-  alpha1|alpha2|alpha3)
-    SUFFIX="-${RELEASE}"
-    ;;
-  stable)
-    SUFFIX=""
-    ;;
-  *)
-    echo "ERROR: unrecognized RELEASE value '$RELEASE' (expected dev, alpha1, alpha2, alpha3, or stable)" >&2
-    exit 1
-    ;;
-esac
+APPIMAGE_NAME="${APPNAME}-${DISPLAY_VERSION}-${ARCH}.AppImage"
 
-APPIMAGE_NAME="${APPNAME}-${VERSION}${SUFFIX}-${ARCH}.AppImage"
-
-echo "=== Packaging $APPNAME $VERSION r$HEAD ($ARCH) ==="
+echo "=== Packaging $APPNAME $DISPLAY_VERSION ($ARCH) ==="
 
 # ---------------------------------------------------------------------------
 # Fetch linuxdeploy + linuxdeploy-plugin-qt
@@ -228,7 +213,7 @@ chmod +x "$APPDIR/AppRun"
 # Build the AppImage itself
 # ---------------------------------------------------------------------------
 cd "$SOURCE_DIR"
-VERSION="$VERSION-r$HEAD" "$TOOLS_DIR/linuxdeploy-$ARCH.AppImage" --appdir "$APPDIR" --desktop-file "$DESKTOP_FILE" --output appimage
+VERSION="$DISPLAY_VERSION" "$TOOLS_DIR/linuxdeploy-$ARCH.AppImage" --appdir "$APPDIR" --desktop-file "$DESKTOP_FILE" --output appimage
 
 PRODUCED="$(find "$SOURCE_DIR" -maxdepth 1 -iname "QElectroTech*-$ARCH.AppImage" | head -1)"
 if [ -z "$PRODUCED" ]; then

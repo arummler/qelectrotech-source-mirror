@@ -25,15 +25,9 @@ jobs:
     - name: Run doxygen
       run: |
         set -euo pipefail
-        VERSION="$(tr -d '[:space:]' < QET_VERSION)"
-        RELEASE="$(tr -d '[:space:]' < QET_RELEASE)"
-        case "$RELEASE" in
-          dev)    PROJECT_NUMBER="${VERSION}-dev" ;;
-          stable) PROJECT_NUMBER="${VERSION}" ;;
-          alpha1|alpha2|alpha3) PROJECT_NUMBER="${VERSION}-${RELEASE}" ;;
-          *) echo "ERROR: unrecognized QET_RELEASE value '$RELEASE'" >&2; exit 1 ;;
-        esac
-        (cat Doxyfile; echo "PROJECT_NUMBER = \"${PROJECT_NUMBER}\"") | doxygen -
+        # The revision is not needed for the label, and this checkout is shallow.
+        eval "$(QET_REV=0 bash build-aux/qet-version.sh --format env)"
+        (cat Doxyfile; echo "PROJECT_NUMBER = \"${LABEL}\"") | doxygen -
     - name: Create Pull Request
       if: startsWith(github.ref, 'refs/tags/')
       uses: peter-evans/create-pull-request@v8

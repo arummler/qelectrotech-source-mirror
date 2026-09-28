@@ -29,26 +29,8 @@ jobs:
         id: qet_version
         run: |
           set -euo pipefail
-          VERSION="$(tr -d '[:space:]' < QET_VERSION)"
-          RELEASE="$(tr -d '[:space:]' < QET_RELEASE)"
-
-          case "$RELEASE" in
-            dev)
-              SUFFIX="-r$(git rev-list HEAD --count)-$(git rev-parse --short HEAD)"
-              ;;
-            alpha1|alpha2|alpha3)
-              SUFFIX="-${RELEASE}"
-              ;;
-            stable)
-              SUFFIX=""
-              ;;
-            *)
-              echo "ERROR: unrecognized QET_RELEASE value '$RELEASE'" >&2
-              exit 1
-              ;;
-          esac
-
-          echo "version=${VERSION}${SUFFIX}" >> "$GITHUB_OUTPUT"
+          eval "$(bash build-aux/qet-version.sh --format env)"
+          echo "version=${DISPLAY_VERSION}" >> "$GITHUB_OUTPUT"
 
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:

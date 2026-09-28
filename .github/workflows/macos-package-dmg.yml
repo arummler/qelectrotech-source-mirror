@@ -3,19 +3,10 @@ name: Package MacOS DMG
 on:
   workflow_call:
   workflow_dispatch:
-  # Temporarily also on push/PR while this is actively being iterated on --
-  # dial back to workflow_dispatch + a nightly schedule once it's proven.
-  # pull_request:
-  # push:
-  #  branches: [master]
-
-concurrency:
-  group: macos-package-dmg-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   package-macos:
-    name: Package DMG for ${{ matrix.arch }})
+    name: Package DMG for ${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
@@ -41,11 +32,12 @@ jobs:
         
       - name: Package DMG
         env:
-          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          NOTARY_API_KEY_BASE64: ${{ secrets.NOTARY_API_KEY_BASE64 }}
-          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
-          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          # Signing material is never handed to pull request builds.
+          MACOS_CERTIFICATE_P12_BASE64: ${{ github.event_name != 'pull_request' && secrets.MACOS_CERTIFICATE_P12_BASE64 || '' }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ github.event_name != 'pull_request' && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
+          NOTARY_API_KEY_BASE64: ${{ github.event_name != 'pull_request' && secrets.NOTARY_API_KEY_BASE64 || '' }}
+          NOTARY_KEY_ID: ${{ github.event_name != 'pull_request' && secrets.NOTARY_KEY_ID || '' }}
+          NOTARY_ISSUER_ID: ${{ github.event_name != 'pull_request' && secrets.NOTARY_ISSUER_ID || '' }}
         run: |
           set -euo pipefail
           # Only request signing/notarization if the certificate secret

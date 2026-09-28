@@ -8,9 +8,6 @@ on:
 
 jobs:
   build-windows:
-    concurrency:
-      group: windows-package-exe-${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: true    
     name: Package Exe and Portable with WiX v7
     runs-on: windows-latest
     steps:
@@ -304,33 +301,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION=$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/QET_VERSION")
-          RELEASE=$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/QET_RELEASE")
-
-          GITCOMMIT=$(git -C "$GITHUB_WORKSPACE" rev-parse --short HEAD)
-          A=$(git -C "$GITHUB_WORKSPACE" rev-list HEAD --count)
-          HEAD=$(( A + 473 ))
-
-          case "$RELEASE" in
-            dev)
-              SUFFIX="-r${HEAD}-${GITCOMMIT}"
-              VCS_TAG="+git${HEAD}"
-              ;;
-            alpha1|alpha2|alpha3)
-              SUFFIX="-${RELEASE}"
-              VCS_TAG=""
-              ;;
-            stable)
-              SUFFIX=""
-              VCS_TAG=""
-              ;;
-            *)
-              echo "ERROR: unrecognized RELEASE value '$RELEASE' (expected dev, alpha1, alpha2, alpha3, or stable)" >&2
-              exit 1
-              ;;
-          esac
-
-          FULL_VERSION="${VERSION}${SUFFIX}_x86_64-win64"
+          # One rule for every package: build-aux/qet-version.sh
+          eval "$(bash "$GITHUB_WORKSPACE/build-aux/qet-version.sh" --source-dir "$GITHUB_WORKSPACE" --format env)"
+          GITCOMMIT="$SHORT_SHA"
+          HEAD="$REV"
+          FULL_VERSION="${DISPLAY_VERSION}_x86_64-win64"
           BASE_VERSION="${VERSION}"
 
           echo "version=$FULL_VERSION"      >> "$GITHUB_OUTPUT"
