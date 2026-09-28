@@ -66,8 +66,12 @@ jobs:
         # same as a regression, and failing on it would make this job flaky
         # rather than informative.
         run: |
+          SCRIPT="${{ github.workspace }}/source/tests/ipc-regression/run.sh"
+          BINARY="${{ github.workspace }}/build/qelectrotech"
+          test -x "$SCRIPT" || { echo "::error::missing or non-executable $SCRIPT"; exit 1; }
+          test -x "$BINARY" || { echo "::error::missing binary $BINARY"; exit 1; }
           set +e
-          ${{ github.workspace }}/tests/ipc-regression/run.sh --binary build/qelectrotech
+          "$SCRIPT" --binary "$BINARY"
           status=$?
           set -e
           case $status in
