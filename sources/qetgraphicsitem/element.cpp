@@ -697,6 +697,16 @@ Terminal *Element::parseTerminal(const QDomElement &dom_element)
 	}
 
 	Terminal *new_terminal = new Terminal(data, this);
+		//Terminals are parsed in the order of the definition, and the list
+		//is not kept in that order (sort below)
+	int rank = 0;
+	for (Terminal *t : std::as_const(m_terminals)) {
+		if (t->dock_elmt_ == new_terminal->dock_elmt_
+			&& t->orientation() == new_terminal->orientation()) {
+			++rank;
+		}
+	}
+	new_terminal->setPlaceRank(rank);
 	m_terminals << new_terminal;
 
 	connect(new_terminal, &Terminal::conductorWasAdded,   this, &Element::updateConductorTexts);
@@ -1033,7 +1043,11 @@ QDomElement Element::toXml(
 		QDomElement infos =
 				document.createElement(QStringLiteral("elementInformations"));
 		m_data.m_informations.toXml(infos, QStringLiteral("elementInformation"));
-		element.appendChild(infos);
+			//toXml() skips empty values: an element whose information is
+			//all empty would otherwise be written an empty block, which the
+			//next load reads as no information and the next save drops.
+		if (infos.hasChildNodes())
+			element.appendChild(infos);
 	}
 
 		//Save override properties (For now, only used when the element is a terminal)

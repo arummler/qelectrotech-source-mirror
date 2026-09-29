@@ -142,10 +142,16 @@ class Diagram : public QGraphicsScene
 			//Selection before the current click, see completeGroupSelection()
 		QList<QPointer<QGraphicsObject>> m_previous_selection;
 		void rememberSelection();
+			//Member of a wholly selected group under the current click, which
+			//the click picks out on its own if it ends without a drag
+		QPointer<QGraphicsObject> m_member_to_pick;
 
 		bool uuidUsedByOtherDiagram(const QUuid &uuid) const;
 		QUuid derivedUuid(const QDomElement &root, const QString &reason) const;
-	
+
+			//Wires of the loaded file whose ends could not be found
+		QStringList m_wires_not_reconnected;
+
 	// METHODS
 	protected:
 		void drawBackground(QPainter *, const QRectF &) override;
@@ -168,6 +174,7 @@ class Diagram : public QGraphicsScene
 		void correctTextPos(Element* elmt);
 		void restoreText(Element* elmt);
 		QUuid uuid();
+		QStringList wiresNotReconnected() const;
 		void setEventInterface (DiagramEventInterface *event_interface);
 		void clearEventInterface();
 
@@ -318,6 +325,10 @@ class Diagram : public QGraphicsScene
 
 		void diagramActivated();
 		void diagramInformationChanged();
+
+			/// Emitted by setItemGroup(): an item joined or left a group
+			/// without the selection changing (#1144)
+		void itemGroupChanged();
 };
 Q_DECLARE_METATYPE(Diagram *)
 
