@@ -28,6 +28,10 @@ jobs:
         # Breadth: every supported Ubuntu, default dependency set
         # (BUILD_WITH_KF=OFF, bundled pugixml).
         os:
+          - ubuntu-22.04
+          - ubuntu-22.04-arm
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
           - ubuntu-26.04
           - ubuntu-26.04-arm
         deps: [default]

@@ -46,8 +46,8 @@ rm -rf AppDir/qelectrotech/
 mkdir -p AppDir/qelectrotech/usr/bin
 cp build/qelectrotech AppDir/qelectrotech/usr/bin/
 mkdir -p AppDir/qelectrotech/usr/share/applications
-cp misc/org.qelectrotech.qelectrotech.desktop AppDir/qelectrotech/usr/share/applications/qelectrotech.desktop
-#cp misc/qelectrotech.appdata.xml AppDir/qelectrotech/usr/share/metainfo/
+cp build-aux/linux/org.qelectrotech.qelectrotech.desktop AppDir/qelectrotech/usr/share/applications/qelectrotech.desktop
+#cp build-aux/linux/qelectrotech.appdata.xml AppDir/qelectrotech/usr/share/metainfo/
 #sed -i 's/'"QElectroTech-*.*/QElectroTech-$tagName-r$HEAD"'/' AppDir/qelectrotech/usr/share/applications/qelectrotech.desktop
 mkdir -p AppDir/qelectrotech/usr/share/icons/hicolor/256x256/apps
 mkdir -p AppDir/qelectrotech/usr/translations

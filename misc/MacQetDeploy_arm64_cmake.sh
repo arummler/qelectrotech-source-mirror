@@ -258,7 +258,7 @@ echo
 echo "______________________________________________________________"
 echo "Install Info.plist and app icon:"
 
-cp -R ${current_dir}/misc/Info.plist $BUNDLE/Contents/
+cp -R ${current_dir}/build-aux/macos/Info.plist $BUNDLE/Contents/
 cp -R ${current_dir}/ico/mac_icon/*.icns $BUNDLE/Contents/Resources/
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION r$HEAD" "$BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 14.0.0" "$BUNDLE/Contents/Info.plist"
