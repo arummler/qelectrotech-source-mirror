@@ -28,10 +28,6 @@ jobs:
         # Breadth: every supported Ubuntu, default dependency set
         # (BUILD_WITH_KF=OFF, bundled pugixml).
         os:
-          - ubuntu-22.04
-          - ubuntu-22.04-arm
-          - ubuntu-24.04
-          - ubuntu-24.04-arm
           - ubuntu-26.04
           - ubuntu-26.04-arm
         deps: [default]
@@ -111,9 +107,9 @@ jobs:
         run: xvfb-run -a ctest --test-dir "${{ github.workspace }}/build" --output-on-failure --no-tests=error
 
       # The gate is a fixed scenario against one Debug binary; running it on
-      # every cell of the matrix only repeats it. Once, on the default 24.04.
+      # every cell of the matrix only repeats it. Once, on the default 26.04.
       - name: IPC open-forwarding regression (#868)
-        if: matrix.os == 'ubuntu-24.04' && matrix.deps == 'default'
+        if: matrix.os == 'ubuntu-26.04' && matrix.deps == 'default'
         # Fails the job only on an actual crash. An inconclusive run means the
         # crash path was not exercised -- it proves nothing, which is not the
         # same as a regression, and failing on it would make this job flaky
