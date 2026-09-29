@@ -328,12 +328,8 @@ jobs:
     # from being published, but a cancelled run (a newer one replaced it) must.
     if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.gate.result == 'success' }}
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     permissions:
       contents: write
-      pages: write
       id-token: write
     steps:
       - name: Decide what can be published
@@ -566,14 +562,25 @@ jobs:
         run: touch gh-pages/.nojekyll
 
       - name: Upload GitHub Pages artifact
-        id: deployment
         if: steps.target.outputs.is_tag == 'false'
         uses: actions/upload-pages-artifact@v5
         with:
           path: gh-pages/
 
+  deploy-pages:
+    name: Deploy download page
+    needs: publish-release
+    if: ${{ !cancelled() && needs.publish-release.result == 'success' && !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
       - name: Deploy to GitHub Pages
-        if: steps.target.outputs.is_tag == 'false'
+        id: deployment
         uses: actions/deploy-pages@v5
 
       # Last, and never the new one: the previous version deleted the old
