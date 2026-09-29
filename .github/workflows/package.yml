@@ -26,6 +26,9 @@ name: CI and packaging
 #   pull request          never publishes. Packages only with the "ci-package"
 #                         label; the checks are then the ones that already run
 #                         on the pull request, they are not repeated.
+#   push ci-package/**    checks -> packages, never publishes (test builds)
+#   push ci-publish-test/** checks -> packages -> development release + page on
+#                         THIS repo (to test the publish path in a fork)
 #
 # Recovery
 #   * A failed job: "Re-run failed jobs" on the run. Jobs that succeeded are not
@@ -53,7 +56,8 @@ on:
   push:
     tags: ['*']
     branches:
-      - master-feature-cicd-overhaul-working-20260922/**
+      - 'ci-package/**'         # build + test all packages, never publish
+      - 'ci-publish-test/**'    # same, but also runs the real publish path
 
 # One run per ref. Pull requests: a new push replaces the old run. Nightly and
 # tags: runs queue instead of cancelling each other, so a run that is already
@@ -141,10 +145,10 @@ jobs:
               if [ "$ACTION" = "labeled" ] && [ "$LABEL_NAME" != "ci-package" ]; then skip=true; fi
               if echo "$PR_LABELS" | jq -e 'index("ci-package")' >/dev/null; then package=true; fi
               ;;
-            push)                      # tags only, see "on:"
+            push)                      # tags, ci-package/**, ci-publish-test/**
               if $is_tag; then
                 package=true; publish=true; strict=true
-              elif [[ "$REF" == refs/heads/master-feature-cicd-overhaul-working-20260922/* ]]; then
+              elif [[ "$REF" == refs/heads/ci-publish-test/* ]]; then
                 # full dry run: packages + a real (development) release + a
                 # real Pages deploy, on THIS fork, to test publish itself
                 package=true; publish=true
@@ -324,6 +328,9 @@ jobs:
     # from being published, but a cancelled run (a newer one replaced it) must.
     if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.gate.result == 'success' }}
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     permissions:
       contents: write
       pages: write
@@ -559,6 +566,7 @@ jobs:
         run: touch gh-pages/.nojekyll
 
       - name: Upload GitHub Pages artifact
+        id: deployment
         if: steps.target.outputs.is_tag == 'false'
         uses: actions/upload-pages-artifact@v5
         with:
