@@ -52,6 +52,8 @@ on:
     types: [opened, synchronize, reopened, labeled]
   push:
     tags: ['*']
+    branches:
+      - master-feature-cicd-overhaul-working-20260922/**
 
 # One run per ref. Pull requests: a new push replaces the old run. Nightly and
 # tags: runs queue instead of cancelling each other, so a run that is already
@@ -140,7 +142,16 @@ jobs:
               if echo "$PR_LABELS" | jq -e 'index("ci-package")' >/dev/null; then package=true; fi
               ;;
             push)                      # tags only, see "on:"
-              package=true; publish=true; strict=true
+              if $is_tag; then
+                package=true; publish=true; strict=true
+              elif [[ "$REF" == refs/heads/master-feature-cicd-overhaul-working-20260922/* ]]; then
+                # full dry run: packages + a real (development) release + a
+                # real Pages deploy, on THIS fork, to test publish itself
+                package=true; publish=true
+              else
+                # ci-package/**: build + test the packages, never publish
+                package=true
+              fi
               ;;
             schedule)
               package=true; publish=true
