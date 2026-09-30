@@ -25,6 +25,14 @@ Optional:
                    vanishing, and the API-documentation link is only offered
                    when the docs were built.
                    Without it, a button without a file is simply left out.
+  CHECKSUMS        contents of SHA256SUMS ("<hash>  <file>" per line, as
+                   written by sha256sum). Each button shows its file's hash,
+                   and a "Verify your download" card links to SHA256SUMS.
+  PACKAGE_SIGNED   JSON {"exe": "true|false", "msi": ..., "dmg": ...}.
+                   "false" shows how to get past the operating system's
+                   warning for an unsigned file; "true" or no entry: nothing.
+  ATTESTED         "true" when build provenance attestations were created
+                   (the verify card then shows the "gh attestation" command).
 """
 import json
 import os
@@ -45,6 +53,22 @@ try:
     status = json.loads(env("PACKAGE_STATUS", "") or "{}")
 except json.JSONDecodeError:
     status = {}
+try:
+    signed = json.loads(env("PACKAGE_SIGNED", "") or "{}")
+except json.JSONDecodeError:
+    signed = {}
+attested = env("ATTESTED", "") == "true"
+
+checksums = {}
+for line in env("CHECKSUMS", "").splitlines():
+    parts = line.split(None, 1)
+    if len(parts) == 2 and len(parts[0]) == 64:
+        # sha256sum marks binary mode with a leading "*"
+        checksums[parts[1].strip().lstrip("*")] = parts[0].lower()
+
+
+def is_unsigned(kind):
+    return str(signed.get(kind, "")).lower() == "false"
 
 
 def has(ext, *, arch=None, not_arch=None):
@@ -98,10 +122,38 @@ BUTTONS = {
     ],
 }
 
-# platform key -> (heading, extra html shown above the buttons)
+UNSIGNED_WINDOWS = """<div class="warning">
+&#9888;&#65039; The {what} not code-signed yet. Windows SmartScreen will show
+&quot;Windows protected your PC&quot;: click <strong>More info</strong>, then
+<strong>Run anyway</strong>. Group-policy deployment may refuse an unsigned MSI.
+</div>"""
+
+UNSIGNED_MACOS = """<div class="warning">
+&#9888;&#65039; This app is not signed/notarized by Apple yet. macOS will refuse
+to open it at first (&quot;cannot be opened&quot; or &quot;is damaged&quot;).
+Try to open it once, then go to <strong>System Settings &rarr; Privacy &amp;
+Security</strong> and click <strong>Open Anyway</strong>. Alternatively, in a
+terminal: <code>xattr -dr com.apple.quarantine /Applications/QElectroTech.app</code>
+</div>"""
+
+
+def windows_notice():
+    unsigned = [n for k, n in (("exe", "installer (.exe)"), ("msi", "MSI")) if is_unsigned(k)]
+    if not unsigned:
+        return ""
+    what = " and ".join(unsigned) + (" are" if len(unsigned) > 1 else " is")
+    return UNSIGNED_WINDOWS.format(what=what)
+
+
+def macos_notice():
+    return UNSIGNED_MACOS if is_unsigned("dmg") else ""
+
+
+# platform key -> (heading, extra html shown above the buttons; a string or a
+# function returning one)
 CARDS = {
-    "windows":  ("&#127993; Windows &mdash; x86_64", ""),
-    "macos":    ("&#127838; macOS", ""),
+    "windows":  ("&#127993; Windows &mdash; x86_64", windows_notice),
+    "macos":    ("&#127838; macOS", macos_notice),
     "appimage": ("&#128039; Linux &mdash; AppImage", ""),
     "snap":     ("&#128230; Linux &mdash; Snap", """<div class="warning">
 &#9888;&#65039; Not yet published to the Snap Store &mdash; this is a raw, unsigned
@@ -127,24 +179,33 @@ WHY = {
 
 
 def find_url(env_name, pred):
+    """(url, file name) of the button's file, or ("", "")."""
     explicit = env(env_name, "")
     if explicit:
-        return explicit
+        return explicit, explicit.rsplit("/", 1)[-1]
     if base_url:
         for name in assets:
             if pred(name):
-                return f"{base_url}/{name}"
-    return ""
+                return f"{base_url}/{name}", name
+    return "", ""
+
+
+def render_checksum(name):
+    digest = checksums.get(name)
+    if not digest:
+        return ""
+    return f"""
+<div class="sha">SHA-256 <code>{digest}</code></div>"""
 
 
 def render_button(env_name, job, pred, css, icon, label, small):
-    url = find_url(env_name, pred)
+    url, name = find_url(env_name, pred)
     if url:
         return f"""
 <a class="btn {css}" href="{url}">
 <span class="btn-icon">{icon}</span>
 <span class="btn-text">{label}<small>{small}</small></span>
-</a>"""
+</a>{render_checksum(name)}"""
     state = status.get(job)
     if state in WHY:
         why = WHY[state]
@@ -165,6 +226,8 @@ for key, buttons in BUTTONS.items():
     if not rendered:
         continue
     heading, extra = CARDS[key]
+    if callable(extra):
+        extra = extra()
     cards += f"""
 <div class="card">
 <h2>{heading}</h2>
@@ -180,6 +243,27 @@ if failed_jobs:
     failure_banner = f"""<div class="warning">
 &#10060; Not everything could be built this time: {", ".join(failed_jobs)}.
 The other downloads below are complete. <a href="{run_url}">See the CI run</a>.
+</div>"""
+
+verify_card = ""
+if checksums and base_url:
+    attest = ""
+    if attested:
+        attest = f"""
+<p>Each file also carries a signed build-provenance attestation: proof that it
+was built by this project's GitHub Actions workflow from the commit above.
+With the <a href="https://cli.github.com/">GitHub CLI</a>:</p>
+<pre>gh attestation verify &lt;file&gt; --repo {repo}</pre>"""
+    verify_card = f"""
+<div class="card">
+<h2>&#128273; Verify your download</h2>
+<div class="verify">
+<p>The SHA-256 checksum of every file is shown under its button and listed in
+<a href="{base_url}/SHA256SUMS">SHA256SUMS</a>. After downloading into the same
+folder: <code>sha256sum -c --ignore-missing SHA256SUMS</code>
+(macOS: <code>shasum -a 256 -c --ignore-missing SHA256SUMS</code>,
+Windows PowerShell: <code>Get-FileHash &lt;file&gt;</code>).</p>{attest}
+</div>
 </div>"""
 
 docs_state = status.get("build-docs")
@@ -219,6 +303,11 @@ main{{max-width:680px;margin:40px auto;padding:0 20px 60px}}
 .btn-failed:hover{{transform:none;box-shadow:none}}
 .btn-failed a{{color:#9b2c2c;text-decoration:underline}}
 .btn-icon{{font-size:1.3em}}
+.sha{{margin:-8px 0 0 4px;font-size:.72em;color:#718096;word-break:break-all}}
+.sha code{{font-size:1em}}
+.verify{{font-size:.875em;line-height:1.6;color:#2d3748}}
+.verify p{{margin-bottom:8px}}
+.verify pre{{background:#f7fafc;border-radius:4px;padding:8px 12px;overflow-x:auto;margin-bottom:8px}}
 .btn-text small{{display:block;font-weight:400;font-size:.8em;opacity:.75;margin-top:1px}}
 footer{{text-align:center;font-size:.8em;color:#4a5568;padding:32px 0 0}}
 footer a{{color:#2d3748;text-decoration:none}}
@@ -249,6 +338,7 @@ For production use, download a <a href="https://github.com/{repo}/releases">stab
 </a>
 </div>
 {cards}
+{verify_card}
 </main>
 <footer>
 Auto-generated by GitHub Actions &nbsp;&middot;&nbsp;

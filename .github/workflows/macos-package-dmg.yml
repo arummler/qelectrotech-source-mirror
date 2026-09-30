@@ -2,6 +2,10 @@ name: Package MacOS DMG
 
 on:
   workflow_call:
+    outputs:
+      signed:
+        description: "true if the DMGs are signed (and notarized if a notary key exists)"
+        value: ${{ jobs.package-macos.outputs.signed }}
   workflow_dispatch:
 
 jobs:
@@ -18,6 +22,10 @@ jobs:
             arch: x86_64
             runner: macos-26-intel
     runs-on: ${{ matrix.runner }}
+    # Both architectures sign with the same secrets, so either leg's value is
+    # the answer; a requested signing that fails fails the job instead.
+    outputs:
+      signed: ${{ steps.package.outputs.signed }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -31,6 +39,7 @@ jobs:
           vtool -show-build "$(brew --prefix qt)/lib/QtCore.framework/Versions/A/QtCore" | grep -A3 "LC_BUILD_VERSION"
         
       - name: Package DMG
+        id: package
         env:
           # Signing material is never handed to pull request builds.
           MACOS_CERTIFICATE_P12_BASE64: ${{ github.event_name != 'pull_request' && secrets.MACOS_CERTIFICATE_P12_BASE64 || '' }}
@@ -50,7 +59,12 @@ jobs:
           if [ -n "${NOTARY_API_KEY_BASE64:-}" ]; then
             ARGS="$ARGS --notarize"
           fi
-          ./build-aux/macos/package_dmg.sh $ARGS          
+          ./build-aux/macos/package_dmg.sh $ARGS
+          if [ -n "${MACOS_CERTIFICATE_P12_BASE64:-}" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v7

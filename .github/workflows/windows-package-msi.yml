@@ -1,8 +1,12 @@
 name: Package Windows MSI (WiX v7)
 
 on:
-  # Triggered automatically after a successful Windows build on master
-  workflow_call:  
+  # Called from package.yml
+  workflow_call:
+    outputs:
+      signed:
+        description: "true if SignPath signed the MSI"
+        value: ${{ jobs.build-msi.outputs.signed }}
   # workflow_run:
   #  workflows: ["Windows Build"]
   #  types: [completed]
@@ -19,6 +23,8 @@ jobs:
   build-msi:
     name: Package MSI with WiX v7
     runs-on: windows-latest
+    outputs:
+      signed: ${{ steps.sign.outcome == 'success' }}
     # Only runs if Windows Build succeeded (or triggered manually)
     # if: >
     #  github.event_name == 'workflow_dispatch' ||
@@ -279,5 +285,5 @@ jobs:
         run: |
           Write-Host "=== MSI build summary  ==="
           Write-Host "Version : ${{ steps.version.outputs.VERSION_DISPLAY }}"
-          Write-Host "Signed  : $(if ('${{ env.SIGNPATH_API_TOKEN }}' -ne '') { 'yes' } else { 'no (SignPath not configured, or fork)' })"
+          Write-Host "Signed  : $(if ('${{ steps.sign.outcome }}' -eq 'success') { 'yes' } else { 'no (SignPath skipped or failed: ${{ steps.sign.outcome }})' })"
 
