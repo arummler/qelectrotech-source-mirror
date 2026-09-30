@@ -29,6 +29,10 @@ jobs:
         id: qet_version
         run: |
           set -euo pipefail
+          # This job runs in a container as root, but the checkout belongs to
+          # the runner user: git then refuses to read the repository ("dubious
+          # ownership"), and the version fell back to r0-0000000.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           eval "$(bash build-aux/qet-version.sh --format env)"
           echo "version=${DISPLAY_VERSION}" >> "$GITHUB_OUTPUT"
 

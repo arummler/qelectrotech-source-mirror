@@ -17,7 +17,7 @@ BASE = "https://github.com/o/r/releases/download/development-x"
 
 ALL_ASSETS = "\n".join([
     "QElectroTech-0.200.1-dev-r800-abc1234_x86_64-win64.exe",
-    "qelectrotech-0.200.1+git800-x86-win64-readytouse.zip",
+    "qelectrotech-0.200.1-dev-r800-abc1234_x86_64-win64-readytouse.zip",
     "QElectroTech-0.200.1-dev-r800-abc1234_x86_64-win64.msi",
     "QElectroTech-0.200.1-dev-r800-abc1234-arm64.dmg",
     "QElectroTech-0.200.1-dev-r800-abc1234-x86_64.dmg",
