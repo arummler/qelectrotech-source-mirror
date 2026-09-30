@@ -17,7 +17,7 @@ BASE = "https://github.com/o/r/releases/download/development-x"
 
 ALL_ASSETS = "\n".join([
     "QElectroTech-0.200.1-dev-r800-abc1234_x86_64-win64.exe",
-    "qelectrotech-0.200.1+git800-x86-win64-readytouse.zip",
+    "qelectrotech-0.200.1-dev-r800-abc1234_x86_64-win64-readytouse.zip",
     "QElectroTech-0.200.1-dev-r800-abc1234_x86_64-win64.msi",
     "QElectroTech-0.200.1-dev-r800-abc1234-arm64.dmg",
     "QElectroTech-0.200.1-dev-r800-abc1234-x86_64.dmg",
@@ -126,6 +126,64 @@ class FailedPackages(unittest.TestCase):
     def test_garbage_status_does_not_crash(self):
         html = render({"ASSET_NAMES": ALL_ASSETS, "BASE_URL": BASE, "PACKAGE_STATUS": "{not json"})
         self.assertIn("Windows Installer", html)
+
+
+class ChecksumsAndSigning(unittest.TestCase):
+    SUMS = "\n".join(
+        f"{(str(i) * 64)[:64]}  {name}" for i, name in enumerate(ALL_ASSETS.splitlines(), 1))
+
+    def base(self, **extra):
+        env = {"ASSET_NAMES": ALL_ASSETS, "BASE_URL": BASE,
+               "PACKAGE_STATUS": json.dumps(ALL_OK)}
+        env.update(extra)
+        return render(env)
+
+    def test_checksum_under_each_button(self):
+        html = self.base(CHECKSUMS=self.SUMS)
+        for line in self.SUMS.splitlines():
+            digest, name = line.split("  ", 1)
+            i = html.index(f'{BASE}/{name}')
+            self.assertIn(digest, html[i:i + 700], name)   # right after its button
+        self.assertIn(f'href="{BASE}/SHA256SUMS"', html)
+        self.assertIn("Verify your download", html)
+
+    def test_binary_mode_star_is_accepted(self):
+        name = ALL_ASSETS.splitlines()[0]
+        html = self.base(CHECKSUMS=f"{'a' * 64} *{name}")
+        self.assertIn("a" * 64, html)
+
+    def test_no_checksums_no_verify_card(self):
+        html = self.base()
+        self.assertNotIn("Verify your download", html)
+        self.assertNotIn('class="sha"', html)
+
+    def test_attestation_command_only_when_attested(self):
+        self.assertNotIn("gh attestation verify", self.base(CHECKSUMS=self.SUMS))
+        html = self.base(CHECKSUMS=self.SUMS, ATTESTED="true")
+        self.assertIn("gh attestation verify &lt;file&gt; --repo o/r", html)
+
+    def test_unsigned_notices(self):
+        html = self.base(PACKAGE_SIGNED=json.dumps({"dmg": "false", "msi": "false", "exe": "false"}))
+        self.assertIn("Open Anyway", html)
+        self.assertIn("installer (.exe) and MSI are not code-signed", html)
+
+    def test_signed_msi_only_exe_mentioned(self):
+        html = self.base(PACKAGE_SIGNED=json.dumps({"dmg": "true", "msi": "true", "exe": "false"}))
+        self.assertIn("installer (.exe) is not code-signed", html)
+        self.assertNotIn("Open Anyway", html)
+
+    def test_unknown_signing_state_shows_nothing(self):
+        html = self.base(PACKAGE_SIGNED=json.dumps({"dmg": "", "msi": "", "exe": ""}))
+        self.assertNotIn("not code-signed", html)
+        self.assertNotIn("Open Anyway", html)
+        html = self.base(PACKAGE_SIGNED="{broken")
+        self.assertNotIn("not code-signed", html)
+
+    def test_signed_json_from_workflow_parses(self):
+        # exactly the shape package.yml produces (folded ">-" block)
+        raw = '{"dmg": "false", "msi": "true", "exe": "false"}'
+        html = self.base(PACKAGE_SIGNED=raw)
+        self.assertIn("installer (.exe) is not code-signed", html)
 
 
 if __name__ == "__main__":

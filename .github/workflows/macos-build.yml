@@ -61,9 +61,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
             -DBUILD_WITH_KF=OFF \
             -DBUILD_PUGIXML=${{ matrix.build_pugixml || 'ON' }} \
-            -DPACKAGE_TESTS=ON \
-            -DCMAKE_POLICY_DEFAULT_CMP0077=NEW \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+            -DPACKAGE_TESTS=ON
 
           cmake --build "$BUILD_DIR"
           cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"

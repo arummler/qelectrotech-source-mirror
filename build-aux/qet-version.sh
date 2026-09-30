@@ -82,7 +82,16 @@ fi
 
 # --- git -------------------------------------------------------------------
 in_git=false
-if git -C "$SOURCE_DIR" rev-parse --git-dir >/dev/null 2>&1; then in_git=true; fi
+if git -C "$SOURCE_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  in_git=true
+elif [ -e "$SOURCE_DIR/.git" ] && [ -z "${QET_REV:-}${QET_SHA:-}" ]; then
+  # A checkout git cannot read (typically "dubious ownership" in a container)
+  # must not silently become r0-0000000.
+  echo "qet-version.sh: $SOURCE_DIR is a git checkout, but git cannot read it:" >&2
+  git -C "$SOURCE_DIR" rev-parse --git-dir >&2 || true
+  echo "qet-version.sh: in a container, run: git config --global --add safe.directory \"$SOURCE_DIR\"" >&2
+  exit 1
+fi
 
 if [ -n "${QET_SHA:-}" ]; then
   SHA="$QET_SHA"
