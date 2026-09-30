@@ -1,92 +1,199 @@
 #!/usr/bin/env python3
 """
-generate-page.py — Generates gh-pages/index.html for QElectroTech nightly builds.
-Called from windows-msi.yml deploy-pages job.
+generate-page.py -- Generates gh-pages/index.html for QElectroTech development builds.
 
-Environment variables required:
-  DATE, SHORT, REPO, SHA, RUN_URL, RUN_NUMBER,
-  INSTALLER_URL, PORTABLE_URL, MSI_URL (optional)
+Called from package.yml (publish-release job).
 
-Optional (frozen Qt5 legacy build — omitted entirely if empty):
-  LEGACY_INSTALLER_URL, LEGACY_PORTABLE_URL, LEGACY_MSI_URL
+Required environment variables:
+  DATE, SHORT, REPO, SHA, RUN_URL, RUN_NUMBER, RELEASE_TAG
 
-NOTE: Windows Qt5 CI build removed (Qt6 is now the sole track built and
-signed going forward). INSTALLER_URL / PORTABLE_URL / MSI_URL point to the
-Qt6 build artifacts. The LEGACY_* variables, when set, point to the last
-Qt5 nightly assets that were ever published — kept downloadable but frozen
-(windows-build.yml no longer regenerates or deletes them).
+How the download buttons are found (either way works, they can be mixed):
+  ASSET_NAMES + BASE_URL   the file names of the release (one per line) and the
+                           URL prefix; every button picks its file by extension
+                           and architecture (see BUTTONS below)
+  <NAME>_URL               an explicit URL for one button, wins over the above:
+                           INSTALLER_URL PORTABLE_URL MSI_URL
+                           DMG_ARM64_URL DMG_X8664_URL
+                           APPIMAGE_X8664_URL APPIMAGE_AARCH64_URL
+                           SNAP_AMD64_URL SNAP_ARM64_URL
+                           FLATPAK_X8664_URL FLATPAK_AARCH64_URL
+
+Optional:
+  PACKAGE_STATUS   JSON {"<package.yml job id>": "success|failure|cancelled|skipped"}
+                   With it, a package that did not build is shown as FAILED on
+                   the page (with a link to the run) instead of silently
+                   vanishing, and the API-documentation link is only offered
+                   when the docs were built.
+                   Without it, a button without a file is simply left out.
 """
+import json
 import os
 
-date         = os.environ.get("DATE", "")
-short        = os.environ.get("SHORT", "")
-repo         = os.environ.get("REPO", "")
-sha          = os.environ.get("SHA", "")
-run_url      = os.environ.get("RUN_URL", "")
-run_number   = os.environ.get("RUN_NUMBER", "")
-installer_url = os.environ.get("INSTALLER_URL", "")
-portable_url  = os.environ.get("PORTABLE_URL", "")
-msi_url       = os.environ.get("MSI_URL", "")
+env = os.environ.get
 
-legacy_installer_url = os.environ.get("LEGACY_INSTALLER_URL", "")
-legacy_portable_url  = os.environ.get("LEGACY_PORTABLE_URL", "")
-legacy_msi_url       = os.environ.get("LEGACY_MSI_URL", "")
+date        = env("DATE", "")
+short       = env("SHORT", "")
+repo        = env("REPO", "")
+sha         = env("SHA", "")
+run_url     = env("RUN_URL", "")
+run_number  = env("RUN_NUMBER", "")
+release_tag = env("RELEASE_TAG", "")
 
-msi_block = ""
-if msi_url:
-    msi_block = f"""
-<a class="btn btn-msi" href="{msi_url}">
-<span class="btn-icon">&#11015;</span>
-<span class="btn-text">Windows Installer .msi<small>.msi &mdash; for enterprise / GPO deployment</small></span>
-</a>"""
+base_url = env("BASE_URL", "").rstrip("/")
+assets = [a.strip() for a in env("ASSET_NAMES", "").splitlines() if a.strip()]
+try:
+    status = json.loads(env("PACKAGE_STATUS", "") or "{}")
+except json.JSONDecodeError:
+    status = {}
 
-# Legacy Qt5 section — only rendered if at least one legacy asset exists.
-legacy_block = ""
-if legacy_installer_url or legacy_portable_url or legacy_msi_url:
-    legacy_installer_btn = ""
-    if legacy_installer_url:
-        legacy_installer_btn = f"""
-<a class="btn btn-secondary" href="{legacy_installer_url}">
-<span class="btn-icon">&#11015;</span>
-<span class="btn-text">Windows Installer (Qt5, legacy)<small>.exe &mdash; frozen, no longer updated</small></span>
-</a>"""
-    legacy_msi_btn = ""
-    if legacy_msi_url:
-        legacy_msi_btn = f"""
-<a class="btn btn-secondary" href="{legacy_msi_url}">
-<span class="btn-icon">&#11015;</span>
-<span class="btn-text">Windows Installer .msi (Qt5, legacy)<small>.msi &mdash; frozen, no longer updated</small></span>
-</a>"""
-    legacy_portable_btn = ""
-    if legacy_portable_url:
-        legacy_portable_btn = f"""
-<a class="btn btn-secondary" href="{legacy_portable_url}">
-<span class="btn-icon">&#128230;</span>
-<span class="btn-text">Windows Portable (Qt5, legacy)<small>.zip &mdash; frozen, no longer updated</small></span>
-</a>"""
 
-    legacy_block = f"""
+def has(ext, *, arch=None, not_arch=None):
+    """Predicate on an asset file name."""
+    def pred(name):
+        if not name.endswith(ext):
+            return False
+        if arch is not None and arch not in name:
+            return False
+        if not_arch is not None and not_arch in name:
+            return False
+        return True
+    return pred
+
+
+# (env name, package.yml job that produces it, predicate, css class, icon, label, small text)
+BUTTONS = {
+    "windows": [
+        ("INSTALLER_URL", "build-windows-exe", has(".exe"), "btn-primary", "&#11015;",
+         "Windows Installer", ".exe &mdash; recommended, includes all dependencies"),
+        ("MSI_URL", "build-windows-msi", has(".msi"), "btn-msi", "&#11015;",
+         "Windows Installer .msi", ".msi &mdash; for enterprise / GPO deployment"),
+        ("PORTABLE_URL", "build-windows-exe", has(".zip"), "btn-secondary", "&#128230;",
+         "Windows Portable",
+         '.zip &mdash; no installation required, extract and run &quot;Lancer QET.bat&quot;'),
+    ],
+    "macos": [
+        ("DMG_ARM64_URL", "build-macos", has(".dmg", arch="arm64"), "btn-primary", "&#11015;",
+         "macOS Apple Silicon (arm64)", ".dmg &mdash; for M1/M2/M3/M4 Macs"),
+        ("DMG_X8664_URL", "build-macos", has(".dmg", arch="x86_64"), "btn-secondary", "&#11015;",
+         "macOS Intel (x86_64)", ".dmg &mdash; for Intel-based Macs"),
+    ],
+    "appimage": [
+        ("APPIMAGE_X8664_URL", "build-appimage", has(".AppImage", not_arch="aarch64"), "btn-primary", "&#11015;",
+         "Linux x86_64 AppImage", ".AppImage &mdash; chmod +x and run, no installation required"),
+        ("APPIMAGE_AARCH64_URL", "build-appimage", has(".AppImage", arch="aarch64"), "btn-secondary", "&#11015;",
+         "Linux aarch64 AppImage",
+         ".AppImage &mdash; chmod +x and run, no installation required"),
+    ],
+    "snap": [
+        ("SNAP_AMD64_URL", "build-linux-snap", has(".snap", arch="amd64"), "btn-primary", "&#11015;",
+         "Linux amd64 Snap", ".snap &mdash; sudo snap install --dangerous ./&lt;file&gt;.snap"),
+        ("SNAP_ARM64_URL", "build-linux-snap", has(".snap", arch="arm64"), "btn-secondary", "&#11015;",
+         "Linux arm64 Snap", ".snap &mdash; sudo snap install --dangerous ./&lt;file&gt;.snap"),
+    ],
+    "flatpak": [
+        ("FLATPAK_X8664_URL", "build-linux-flatpack", has(".flatpak", not_arch="aarch64"), "btn-primary", "&#11015;",
+         "Linux x86_64 Flatpak", ".flatpak &mdash; flatpak install ./&lt;file&gt;.flatpak"),
+        ("FLATPAK_AARCH64_URL", "build-linux-flatpack", has(".flatpak", arch="aarch64"), "btn-secondary", "&#11015;",
+         "Linux aarch64 Flatpak", ".flatpak &mdash; flatpak install ./&lt;file&gt;.flatpak"),
+    ],
+}
+
+# platform key -> (heading, extra html shown above the buttons)
+CARDS = {
+    "windows":  ("&#127993; Windows &mdash; x86_64", ""),
+    "macos":    ("&#127838; macOS", ""),
+    "appimage": ("&#128039; Linux &mdash; AppImage", ""),
+    "snap":     ("&#128230; Linux &mdash; Snap", """<div class="warning">
+&#9888;&#65039; Not yet published to the Snap Store &mdash; this is a raw, unsigned
+bundle. Requires the <code>--dangerous</code> flag to install manually, since
+it isn't signed by the Store.
+</div>"""),
+    "flatpak":  ("&#128230; Linux &mdash; Flatpak", ""),
+}
+
+# friendly names for the failure banner
+JOB_NAMES = {
+    "build-macos": "macOS DMG", "build-appimage": "Linux AppImage",
+    "build-windows-exe": "Windows installer + portable", "build-windows-msi": "Windows MSI",
+    "build-linux-snap": "Linux Snap", "build-linux-flatpack": "Linux Flatpak",
+    "build-docs": "API documentation",
+}
+
+WHY = {
+    "failure":   "build failed",
+    "cancelled": "build cancelled",
+    "skipped":   "not built (a step it depends on failed)",
+}
+
+
+def find_url(env_name, pred):
+    explicit = env(env_name, "")
+    if explicit:
+        return explicit
+    if base_url:
+        for name in assets:
+            if pred(name):
+                return f"{base_url}/{name}"
+    return ""
+
+
+def render_button(env_name, job, pred, css, icon, label, small):
+    url = find_url(env_name, pred)
+    if url:
+        return f"""
+<a class="btn {css}" href="{url}">
+<span class="btn-icon">{icon}</span>
+<span class="btn-text">{label}<small>{small}</small></span>
+</a>"""
+    state = status.get(job)
+    if state in WHY:
+        why = WHY[state]
+    elif state == "success":
+        why = "built, but the file is missing from the release"
+    else:
+        return ""   # no status information: leave the button out
+    return f"""
+<div class="btn btn-failed">
+<span class="btn-icon">&#10060;</span>
+<span class="btn-text">{label}<small>{why} &mdash; <a href="{run_url}">see the run</a></small></span>
+</div>"""
+
+
+cards = ""
+for key, buttons in BUTTONS.items():
+    rendered = "".join(render_button(*b) for b in buttons)
+    if not rendered:
+        continue
+    heading, extra = CARDS[key]
+    cards += f"""
 <div class="card">
-<h2>&#128451; Windows &mdash; x86_64 &mdash; Qt5 (legacy, unmaintained)</h2>
-<div class="warning">
-&#128451; <strong>Legacy build &mdash; frozen, no longer updated.</strong> This is the
-last Qt5 build published before Windows CI switched to Qt6 only. Kept available for
-anyone who still needs it, but it will not receive further fixes or security updates.
-Please migrate to the Qt6 build above when you can.
-</div>
+<h2>{heading}</h2>
+{extra}
 <div class="downloads">
-{legacy_installer_btn}
-{legacy_msi_btn}
-{legacy_portable_btn}
+{rendered}
 </div>
 </div>"""
+
+failed_jobs = [JOB_NAMES.get(j, j) for j, s in status.items() if s != "success"]
+failure_banner = ""
+if failed_jobs:
+    failure_banner = f"""<div class="warning">
+&#10060; Not everything could be built this time: {", ".join(failed_jobs)}.
+The other downloads below are complete. <a href="{run_url}">See the CI run</a>.
+</div>"""
+
+docs_state = status.get("build-docs")
+if docs_state in (None, "success"):
+    docs_link = '<a href="docs/">API documentation</a>'
+else:
+    docs_link = "API documentation (not built this time)"
 
 html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QElectroTech &ndash; Nightly Builds</title>
+<title>QElectroTech &ndash; Development Builds</title>
 <style>
 *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f0f4f8;color:#2d3748;min-height:100vh}}
@@ -108,16 +215,19 @@ main{{max-width:680px;margin:40px auto;padding:0 20px 60px}}
 .btn-primary{{background:#2b6cb0;color:white}}
 .btn-msi{{background:#6b46c1;color:white}}
 .btn-secondary{{background:#edf2f7;color:#2d3748}}
+.btn-failed{{background:#fff5f5;color:#9b2c2c;border:1px dashed #fc8181;cursor:default}}
+.btn-failed:hover{{transform:none;box-shadow:none}}
+.btn-failed a{{color:#9b2c2c;text-decoration:underline}}
 .btn-icon{{font-size:1.3em}}
 .btn-text small{{display:block;font-weight:400;font-size:.8em;opacity:.75;margin-top:1px}}
-footer{{text-align:center;font-size:.8em;color:#a0aec0;padding:32px 0 0}}
-footer a{{color:#718096;text-decoration:none}}
+footer{{text-align:center;font-size:.8em;color:#4a5568;padding:32px 0 0}}
+footer a{{color:#2d3748;text-decoration:none}}
 </style>
 </head>
 <body>
 <header>
 <h1>&#9889; QElectroTech</h1>
-<p>Nightly Windows Builds</p>
+<p>Development Builds</p>
 </header>
 <main>
 <div class="card">
@@ -126,38 +236,25 @@ footer a{{color:#718096;text-decoration:none}}
 &#128197; &nbsp;<strong>{date}</strong><br>
 &#128256; &nbsp;Commit <a href="https://github.com/{repo}/commit/{sha}"><code>{short}</code></a><br>
 &#128295; &nbsp;<a href="{run_url}">CI Run #{run_number}</a>
-<span class="badge">nightly</span>
+<span class="badge">development</span>
 </div>
 <div class="warning">
-&#9888;&#65039; This is a development version; it introduces new features you want,
-but may cause bugs that have not yet been identified yet in <code>master</code>.
+&#9888;&#65039; This is a development version generated automatically from the newest commit on the master branch, It might introduce new features which you might want, but it may also exhibit new bugs that have not yet been identified yet.
 For production use, download a <a href="https://github.com/{repo}/releases">stable release</a>.
 </div>
-</div>
-<div class="card">
-<h2>&#127993; Windows &mdash; x86_64</h2>
-<div class="downloads">
-<a class="btn btn-primary" href="{installer_url}">
-<span class="btn-icon">&#11015;</span>
-<span class="btn-text">Windows Installer<small>.exe &mdash; recommended, includes all dependencies</small></span>
-</a>
-{msi_block}
-<a class="btn btn-secondary" href="{portable_url}">
+{failure_banner}
+<a class="btn btn-secondary" href="https://github.com/{repo}/releases/tag/{release_tag}">
 <span class="btn-icon">&#128230;</span>
-<span class="btn-text">Windows Portable<small>.zip &mdash; no installation required, extract and run &quot;Lancer QET.bat&quot;</small></span>
-</a>
-<a class="btn btn-secondary" href="https://github.com/{repo}/releases/tag/nightly">
-<span class="btn-icon">&#128230;</span>
-<span class="btn-text">All nightly files on GitHub<small>Release page with checksums</small></span>
+<span class="btn-text">All development version binaries on GitHub<small>Every platform &mdash; release page with checksums</small></span>
 </a>
 </div>
-</div>
-{legacy_block}
+{cards}
 </main>
 <footer>
 Auto-generated by GitHub Actions &nbsp;&middot;&nbsp;
 <a href="https://github.com/{repo}">Source on GitHub</a> &nbsp;&middot;&nbsp;
-<a href="https://qelectrotech.org">qelectrotech.org</a>
+<a href="https://qelectrotech.org">qelectrotech.org</a> &nbsp;&middot;&nbsp;
+{docs_link}
 </footer>
 </body>
 </html>"""
@@ -165,4 +262,5 @@ Auto-generated by GitHub Actions &nbsp;&middot;&nbsp;
 os.makedirs("gh-pages", exist_ok=True)
 with open("gh-pages/index.html", "w", encoding="utf-8") as f:
     f.write(html)
+
 print("index.html written OK")

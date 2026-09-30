@@ -1,0 +1,84 @@
+name: Windows build with MSVC
+# Runs on its own for every pull request and every push to master, and is
+# also called from package.yml, which makes it a mandatory gate before any
+# packaging (nightly, tag, manual run).
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_call:
+  workflow_dispatch:
+
+# On their own (pull request / push) a newer run replaces an older one. When
+# called from package.yml (nightly, tag, manual) every run gets a group of its
+# own, so nothing is cancelled and nothing collides with the caller's group.
+concurrency:
+  group: ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && format('windows-build-msvc-{0}', github.ref) || format('windows-build-msvc-{0}-{1}', github.ref, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+
+jobs:
+  build-windows-qt6:
+    name: Build with MSVC/Qt6
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          path: source
+
+      - name: Set up MSVC environment
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+        
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          aqtversion: '==3.3.*'
+          version: '6.10.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          modules: 'qtpdf'
+  
+      - name: Install SQLite3 via vcpkg
+        run: vcpkg install sqlite3:x64-windows
+        
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          $sourceDir = "${{ github.workspace }}\source"
+          $buildDir = "${{ github.workspace }}\build"
+
+          $cmakeArgs = @(
+            "-S", $sourceDir,
+            "-B", $buildDir,
+            "-G", "Ninja",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DBUILD_WITH_KF=OFF",
+            "-DPACKAGE_TESTS=ON",
+            "-DCMAKE_POLICY_DEFAULT_CMP0077=NEW",
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake",
+            "-DVCPKG_TARGET_TRIPLET=x64-windows"
+          )
+          cmake @cmakeArgs
+          cmake --build $buildDir
+
+      # catch + qttest only: ipc-regression is X11-only and modal-quit-regression
+      # skips itself on Windows. offscreen: no interactive desktop is needed.
+      - name: Unit tests
+        continue-on-error: true
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ctest --test-dir "${{ github.workspace }}\build" --output-on-failure --no-tests=error

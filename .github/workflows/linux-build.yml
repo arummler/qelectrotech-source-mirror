@@ -1,76 +1,137 @@
-# Linux build, unit tests, and the IPC open-forwarding regression gate.
-#
-# The existing workflows build Windows and generate documentation; nothing
-# builds QElectroTech on Linux or runs tests/ in CI. This does both.
-#
-# It runs inside an ubuntu:26.04 container rather than directly on the runner
-# because the IPC gate below needs Qt 6.10.2. The ubuntu-latest image ships
-# Qt 6.4, and whether the crash that gate covers reproduces on 6.4 has never
-# been checked -- a gate that cannot go red is worse than no gate.
-name: Linux build and tests
+name: Linux Build Check with GCC on Ubuntu
 
+# Runs on its own for every pull request and every push to master, and is
+# also called from package.yml, which makes it a mandatory gate before any
+# packaging (nightly, tag, manual run).
 on:
+  pull_request:
   push:
     branches: [master]
-  pull_request:
+  workflow_call:
   workflow_dispatch:
 
+# On their own (pull request / push) a newer run replaces an older one. When
+# called from package.yml (nightly, tag, manual) every run gets a group of its
+# own, so nothing is cancelled and nothing collides with the caller's group.
+concurrency:
+  group: ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && format('linux-build-{0}', github.ref) || format('linux-build-{0}-{1}', github.ref, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+
 jobs:
-  linux:
-    name: Build and test (Qt 6, Debug)
-    runs-on: ubuntu-latest
-    container: ubuntu:26.04
+  build-linux:
+    name: GCC ${{ matrix.deps }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Breadth: every supported Ubuntu, default dependency set
+        # (BUILD_WITH_KF=OFF, bundled pugixml).
+        os:
+          - ubuntu-22.04
+          - ubuntu-22.04-arm
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - ubuntu-26.04
+          - ubuntu-26.04-arm
+        deps: [default]
+        include:
+          # Dependency variations. One Ubuntu is enough: these test the CMake
+          # switches, not the distribution. 26.04 because that is the one
+          # release known to ship KF6 in the distribution.
+          - os: ubuntu-26.04
+            deps: kf-system
+            with_kf: "ON"
+            build_kf: "OFF"
+            extra_pkgs: "extra-cmake-modules libkf6coreaddons-dev libkf6widgetsaddons-dev"
+          - os: ubuntu-26.04
+            deps: pugixml-system
+            build_pugixml: "OFF"
+            extra_pkgs: "libpugixml-dev"
+          - os: ubuntu-26.04
+            deps: kf-and-pugixml-system
+            with_kf: "ON"
+            build_kf: "OFF"
+            build_pugixml: "OFF"
+            extra_pkgs: "extra-cmake-modules libkf6coreaddons-dev libkf6widgetsaddons-dev libpugixml-dev"
+          # BUILD_KF=ON (fetch and build KDE Frameworks from source) is
+          # disabled in cmake/fetch_kdeaddons.cmake for now, so no cell here.
 
     steps:
-      - name: Install build and test dependencies
-        run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates build-essential cmake ninja-build git pkg-config \
-            qt6-base-dev qt6-base-private-dev qt6-tools-dev qt6-tools-dev-tools \
-            libqt6svg6-dev libqt6sql6-sqlite libcups2-dev libsqlite3-dev \
-            libxkbcommon-x11-0 \
-            xvfb openbox xdotool x11-utils
-          # extra-cmake-modules and the KF6 libraries are installed rather than
-          # left to FetchContent: without them CMake builds extra-cmake-modules
-          # from source, and its Qt Help documentation target then demands
-          # Qt6{Core,Gui,Widgets,DBus}Tools, failing the configure with an error
-          # that appears to be about QElectroTech and is not.
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            extra-cmake-modules libkf6coreaddons-dev libkf6widgetsaddons-dev \
-            qt6-svg-plugins
-
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v7
         with:
           submodules: recursive
+          fetch-depth: 0
+          path: source
 
-      - name: Configure
-        # Debug, not Release. Whether a use-after-free faults depends on what
-        # the allocator does with the freed block: the commit before #868
-        # crashes every time built Debug and survives every time built
-        # -O3 -DNDEBUG, so a Release job would never catch a regression here.
+      - name: Install Qt6 dependencies
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          cmake -B build -G Ninja \
+          sudo apt-get update
+          sudo apt-get install -y \
+            qt6-base-dev qt6-base-private-dev libqt6svg6-dev libqt6sql6-sqlite qt6-tools-dev \
+            qt6-tools-dev-tools qt6-l10n-tools libqt6pdf6 qt6-pdf-dev qt6-declarative-dev \
+            libsqlite3-dev cmake ninja-build ccache pkg-config g++ \
+            xvfb openbox xdotool x11-utils libxkbcommon-x11-0 \
+            ${{ matrix.extra_pkgs }}
+
+          # Only newer releases ship the SVG plugins as a separate package.
+          if apt-cache show qt6-svg-plugins >/dev/null 2>&1; then
+            sudo apt-get install -y qt6-svg-plugins
+          fi
+
+          # Install OpenGL fix for Ubuntu 22.04
+          if [[ "${{ matrix.os }}" == "ubuntu-22.04" || "${{ matrix.os }}" == "ubuntu-22.04-arm" ]]; then
+            sudo apt-get install -y libgl1-mesa-dev libegl1-mesa-dev
+          fi
+
+      # Debug on purpose: the use-after-free the IPC gate below looks for only
+      # faults in Debug builds (the commit before #868 crashes every time in
+      # Debug and survives every time at -O3 -DNDEBUG).
+      - name: Configure, build, install
+        run: |
+          set -euo pipefail
+          SOURCE_DIR="${{ github.workspace }}/source"
+          BUILD_DIR="${{ github.workspace }}/build"
+          INSTALL_DIR="${{ github.workspace }}/install"
+
+          cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DQT_VERSION_MAJOR=6 \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DQET_EXPORT_PROJECT_DB=ON 
+            -DBUILD_WITH_KF=${{ matrix.with_kf || 'OFF' }} \
+            -DBUILD_KF=${{ matrix.build_kf || 'OFF' }} \
+            -DBUILD_PUGIXML=${{ matrix.build_pugixml || 'ON' }} \
+            -DPACKAGE_TESTS=ON
 
-      - name: Build
-        run: cmake --build build --parallel $(nproc)
+          cmake --build "$BUILD_DIR"
+          cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
 
+      # --no-tests=error: with PACKAGE_TESTS=OFF this step used to print
+      # "No tests were found!!!" and still succeed, i.e. it tested nothing.
       - name: Unit tests
-        run: xvfb-run -a ctest --test-dir build --output-on-failure
+        continue-on-error: true
+        run: xvfb-run -a ctest --test-dir "${{ github.workspace }}/build" --output-on-failure --no-tests=error
 
+      # The gate is a fixed scenario against one Debug binary; running it on
+      # every cell of the matrix only repeats it. Once, on the default 26.04.
       - name: IPC open-forwarding regression (#868)
+        continue-on-error: true
+        if: matrix.os == 'ubuntu-26.04' && matrix.deps == 'default'
         # Fails the job only on an actual crash. An inconclusive run means the
         # crash path was not exercised -- it proves nothing, which is not the
         # same as a regression, and failing on it would make this job flaky
         # rather than informative.
         run: |
+          SCRIPT="${{ github.workspace }}/source/tests/ipc-regression/run.sh"
+          BINARY="${{ github.workspace }}/build/qelectrotech"
+          test -x "$SCRIPT" || { echo "::error::missing or non-executable $SCRIPT"; exit 1; }
+          test -x "$BINARY" || { echo "::error::missing binary $BINARY"; exit 1; }
+          # run.sh exits 2 both for "inconclusive" and for "tool missing".
+          # A missing tool is a broken CI setup, not an inconclusive result.
+          for tool in Xvfb openbox xdotool; do
+            command -v "$tool" >/dev/null || { echo "::error::$tool is not installed, the gate cannot run"; exit 1; }
+          done
           set +e
-          tests/ipc-regression/run.sh --binary build/qelectrotech
+          "$SCRIPT" --binary "$BINARY"
           status=$?
           set -e
           case $status in
