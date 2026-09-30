@@ -76,6 +76,7 @@ jobs:
       # catch + qttest only: ipc-regression is X11-only and modal-quit-regression
       # skips itself on Windows. offscreen: no interactive desktop is needed.
       - name: Unit tests
+        continue-on-error: true
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen

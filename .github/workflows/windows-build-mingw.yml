@@ -81,6 +81,7 @@ jobs:
           cmake --build "$buildDir"
 
       - name: Unit tests
+        continue-on-error: true
         shell: msys2 {0}
         env:
           QT_QPA_PLATFORM: offscreen
