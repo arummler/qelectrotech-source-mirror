@@ -95,11 +95,11 @@ parts:
       - libcups2-dev
       - libspnav-dev
     override-build: |
-      displayed_version=$(cat sources/qetversion.cpp | grep "return QVersionNumber{"| head -n 1| awk -F "{" '{ print $2 }' | awk -F "}" '{ print $1 }' | sed -e 's/,/./g' -e 's/ //g')
-      snap_version="${displayed_version}-g$(git rev-parse --short=8 HEAD)"
-      modified_displayed_version="${snap_version}.snap"
-      sed -i -E "s|const QString displayedVersion =.*|const QString displayedVersion =\"$modified_displayed_version\";|" sources/qet.h
-      craftctl set version="$snap_version"
+      # One rule for every package: build-aux/qet-version.sh
+      # (a snap version may be at most 32 characters: the longest string it
+      # produces, e.g. 0.200.1-r12345-abc1234, is 21).
+      eval "$(bash "$CRAFT_PART_SRC/build-aux/qet-version.sh" --source-dir "$CRAFT_PART_SRC" --format env)"
+      craftctl set version="$DISPLAY_VERSION"
       cmake -G Ninja -B build -S "$CRAFT_PART_SRC" \
         -DCMAKE_INSTALL_PREFIX=/usr \
         -DCMAKE_BUILD_TYPE=Release \

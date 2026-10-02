@@ -1,0 +1,72 @@
+name: Package Linux Snap
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  package-snap:
+    name: Package Snap (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: ubuntu-24.04
+          - arch: arm64
+            os: ubuntu-24.04-arm
+    env:
+      # Only the yes/no answer is kept in the job environment, never the
+      # credential itself (that is handed to the publish steps alone).
+      HAS_SNAP_CREDS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS != '' }}
+      # Store uploads come from trusted refs only, never from pull request code.
+      CAN_PUBLISH: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build snap
+        id: snapcraft
+        uses: snapcore/action-build@v1
+
+      - name: Upload snap artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: qelectrotech-snap-${{ matrix.arch }}
+          path: ${{ steps.snapcraft.outputs.snap }}
+          if-no-files-found: error
+          retention-days: 40
+
+      # Only attempts to publish if the Snap Store credentials secret
+      # actually exists -- same pattern as macos-package-dmg.yml's signing
+      # gate, so this workflow runs fine (build + artifact only) before
+      # anyone's decided to wire up real Snap Store publishing at all.
+      - name: Determine snap channel
+        id: channel
+        run: |
+          set -euo pipefail
+          eval "$(bash build-aux/qet-version.sh --format env)"
+          echo "channel=${SNAP_CHANNEL}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to Snap Store
+        if: env.HAS_SNAP_CREDS == 'true' && env.CAN_PUBLISH == 'true'
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.snapcraft.outputs.snap }}
+          release: ${{ steps.channel.outputs.channel }}
+          
+      - name: Promote stable release to lower channels too
+        if: steps.channel.outputs.channel == 'stable' && env.HAS_SNAP_CREDS == 'true' && env.CAN_PUBLISH == 'true'
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.snapcraft.outputs.snap }}
+          release: beta,candidate
+

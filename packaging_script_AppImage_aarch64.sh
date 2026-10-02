@@ -27,7 +27,9 @@ HEAD=$(($A+473))
 
 #Find major, minor, and micro version numbers in sources/qetversion.cp
 
-tagName=$(cat sources/qetversion.cpp | grep "return QVersionNumber{"| head -n 1| awk -F "{" '{ print $2 }' | awk -F "}" '{ print $1 }' | sed -e 's/,/./g' -e 's/ //g')
+# The version lives in QET_VERSION (sources/qetversion.cpp is generated at
+# configure time from qetversion.cpp.in and does not exist in a fresh checkout).
+tagName=$(tr -d '[:space:]' < QET_VERSION)
 #tagName=$(cat sources/qetversion.cpp | grep "return QVersionNumber{ 0, "| head -n 1| cut -c32-40| sed -e 's/,/./g' -e 's/ //g')   #Find major, minor, and micro version numbers in sources/qetversion.cp
 
 rm -rf build/
@@ -44,8 +46,8 @@ rm -rf AppDir/qelectrotech/
 mkdir -p AppDir/qelectrotech/usr/bin
 cp build/qelectrotech AppDir/qelectrotech/usr/bin/
 mkdir -p AppDir/qelectrotech/usr/share/applications
-cp misc/org.qelectrotech.qelectrotech.desktop AppDir/qelectrotech/usr/share/applications/qelectrotech.desktop
-#cp misc/qelectrotech.appdata.xml AppDir/qelectrotech/usr/share/metainfo/
+cp build-aux/linux/org.qelectrotech.qelectrotech.desktop AppDir/qelectrotech/usr/share/applications/qelectrotech.desktop
+#cp build-aux/linux/qelectrotech.appdata.xml AppDir/qelectrotech/usr/share/metainfo/
 #sed -i 's/'"QElectroTech-*.*/QElectroTech-$tagName-r$HEAD"'/' AppDir/qelectrotech/usr/share/applications/qelectrotech.desktop
 mkdir -p AppDir/qelectrotech/usr/share/icons/hicolor/256x256/apps
 mkdir -p AppDir/qelectrotech/usr/translations

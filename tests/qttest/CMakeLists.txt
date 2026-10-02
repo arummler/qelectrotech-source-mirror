@@ -323,7 +323,7 @@ add_executable(
   tst_crashhandler.cpp
   ${QET_DIR}/sources/logging/crashhandler.cpp
   ${QET_DIR}/sources/logging/logring.cpp
-  ${QET_DIR}/sources/qetversion.cpp)
+  ${CMAKE_BINARY_DIR}/generated/qetversion.cpp)
 add_test(NAME tst_crashhandler COMMAND tst_crashhandler)
 target_include_directories(tst_crashhandler PRIVATE ${QET_DIR}/sources)
 # Qt::Xml because crashhandler.cpp includes qetversion.h for the header it
@@ -345,7 +345,7 @@ add_executable(
   ${QET_DIR}/sources/logging/qetlogger.cpp
   ${QET_DIR}/sources/logging/crashhandler.cpp
   ${QET_DIR}/sources/logging/logring.cpp
-  ${QET_DIR}/sources/qetversion.cpp)
+  ${CMAKE_BINARY_DIR}/generated/qetversion.cpp)
 add_test(NAME tst_crashdumps COMMAND tst_crashdumps)
 target_include_directories(tst_crashdumps PRIVATE
   ${QET_DIR}
