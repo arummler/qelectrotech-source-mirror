@@ -40,6 +40,7 @@
 #include "../qetproject.h"
 #include "../qetresult.h"
 #include "../qetgraphicsitem/conductor.h"
+#include "../qetgraphicsitem/conductortextitem.h"
 #include "../conductorsegment.h"
 #include "../qetgraphicsitem/diagramimageitem.h"
 
@@ -113,6 +114,67 @@ QString QetScriptApi::filePath() const
 int QetScriptApi::folioCount() const
 {
 	return m_project ? m_project->diagrams().count() : 0;
+}
+
+/**
+	@brief QetScriptApi::currentFolio
+	The index of the folio on screen, so a script started from the editor
+	acts where the user is looking. With no view (--run) there is no such
+	folio, and the first one stands in for it so a script written for the
+	editor can still be tried headless; -1 if the project has none.
+*/
+/**
+	@brief QetScriptApi::apiSignatures
+	Every call a script can make, as "returnType name(type param, ...)",
+	read from the meta-object rather than written out by hand, so the list
+	is the one this build has and cannot drift from it: for a person
+	writing a script, and for an assistant that has to write one without
+	the source at hand. A call with default arguments is listed once, with
+	all of them.
+*/
+QStringList QetScriptApi::apiSignatures() const
+{
+	return signatures();
+}
+
+/**
+	@brief QetScriptApi::signatures
+	apiSignatures() without a script running: what qet-assistant.json lists
+	for an assistant before it has run anything.
+*/
+QStringList QetScriptApi::signatures()
+{
+	QStringList list;
+	const QMetaObject *meta = &staticMetaObject;
+	for (int i = meta->methodOffset(); i < meta->methodCount(); ++i) {
+		const QMetaMethod method = meta->method(i);
+		if (method.methodType() != QMetaMethod::Method
+		    || method.access() != QMetaMethod::Public
+		    || (method.attributes() & QMetaMethod::Cloned)) {
+			continue;
+		}
+		const QList<QByteArray> types = method.parameterTypes();
+		const QList<QByteArray> names = method.parameterNames();
+		QStringList params;
+		for (int p = 0; p < types.size(); ++p) {
+			params << QString::fromLatin1(types.at(p) + ' ' + names.value(p));
+		}
+		list << QStringLiteral("%1 %2(%3)")
+			.arg(QString::fromLatin1(method.typeName()),
+			     QString::fromLatin1(method.name()),
+			     params.join(QStringLiteral(", ")));
+	}
+	return list;
+}
+
+int QetScriptApi::currentFolio() const
+{
+	if (!m_project) return -1;
+	const QList<Diagram *> diagrams = m_project->diagrams();
+	if (m_view && m_view->diagram()) {
+		return diagrams.indexOf(m_view->diagram());
+	}
+	return diagrams.isEmpty() ? -1 : 0;
 }
 
 QString QetScriptApi::folioTitle(int index) const
@@ -342,6 +404,18 @@ bool QetScriptApi::save(const QString &output)
 void QetScriptApi::log(const QString &message)
 {
 	QTextStream(stderr) << message << "\n";
+	if (m_live_log) m_live_log->append(message);
+}
+
+/**
+	@brief QetScriptApi::setLive
+	A run asked for by an assistant (LiveServer): what the script logs is
+	collected in @p log for the answer, and a message box -- which would
+	wait for someone who did not ask for it -- is logged instead.
+*/
+void QetScriptApi::setLive(QStringList *log)
+{
+	m_live_log = log;
 }
 
 /**
@@ -3702,6 +3776,89 @@ bool QetScriptApi::setFolioBorder(int folioIndex, const QString &property, const
 }
 
 /**
+	@brief QetScriptApi::conductorDefault
+	One property of the conductor defaults: a folio's (what its new
+	conductors start from, and where "one text per potential" lives), or
+	with folioIndex -1, the project's, which each new folio copies.
+	Empty if the folio or the property does not exist.
+*/
+QString QetScriptApi::conductorDefault(int folioIndex, const QString &property) const
+{
+	if (!m_project) return QString();
+	ConductorProperties p;
+	if (folioIndex == -1) {
+		p = m_project->defaultConductorProperties();
+	} else {
+		const QList<Diagram *> diagrams = m_project->diagrams();
+		if (folioIndex < 0 || folioIndex >= diagrams.count()) return QString();
+		p = diagrams.at(folioIndex)->defaultConductorProperties;
+	}
+	if (property == QLatin1String("onetextperfolio"))
+		return p.m_one_text_per_folio ? QStringLiteral("true") : QStringLiteral("false");
+	return conductorPropertyValue(p, property);
+}
+
+/**
+	@brief QetScriptApi::setConductorDefault
+	Set one property of the conductor defaults, under the names
+	setConductorProperty() takes plus "onetextperfolio" (true/false: one
+	number per potential on each folio). Like the Folio properties and
+	Project properties dialogs, this is not on the undo stack: neither
+	dialog has an undo command for it.
+*/
+bool QetScriptApi::setConductorDefault(int folioIndex, const QString &property, const QString &value)
+{
+	if (!m_project) return false;
+	if (m_project->isReadOnly()) {
+		log(QStringLiteral("qet.setConductorDefault: project is read-only"));
+		return false;
+	}
+	Diagram *diagram = nullptr;
+	if (folioIndex != -1) {
+		const QList<Diagram *> diagrams = m_project->diagrams();
+		if (folioIndex < 0 || folioIndex >= diagrams.count()) return false;
+		diagram = diagrams.at(folioIndex);
+	}
+	const ConductorProperties old_p = diagram ? diagram->defaultConductorProperties
+											  : m_project->defaultConductorProperties();
+	ConductorProperties new_p = old_p;
+	if (property == QLatin1String("onetextperfolio")) {
+		const QString v = value.toLower();
+		if (v != QLatin1String("true") && v != QLatin1String("false")) {
+			log(QStringLiteral("qet.setConductorDefault: onetextperfolio is true or false, not '%1'").arg(value));
+			return false;
+		}
+		new_p.m_one_text_per_folio = (v == QLatin1String("true"));
+	} else if (!setConductorPropertyValue(new_p, property, value)) {
+		log(QStringLiteral("qet.setConductorDefault: cannot set '%1' to '%2'; properties are onetextperfolio, %3")
+			.arg(property, value, conductorPropertyNames().join(QStringLiteral(", "))));
+		return false;
+	}
+	if (new_p == old_p) return true;
+
+	if (!diagram) {
+		m_project->setDefaultConductorProperties(new_p);
+		return true;
+	}
+	diagram->defaultConductorProperties = new_p;
+	// Show or hide the conductor texts now, as the Folio properties dialog
+	// does (DiagramPropertiesDialog), or an export later in this run would
+	// draw them as they were.
+	if (new_p.m_one_text_per_folio != old_p.m_one_text_per_folio)
+	{
+		const QList<Conductor *> conductor_list = diagram->conductors();
+		for (Conductor *c : conductor_list)
+		{
+			const ConductorProperties cp = c->properties();
+			c->textItem()->setVisible(cp.type == ConductorProperties::Multi && cp.m_show_text);
+		}
+		for (Conductor *c : conductor_list)
+			c->calculateTextItemPosition();
+	}
+	return true;
+}
+
+/**
 	@brief QetScriptApi::elementGeometry
 	Where an element is: x and y are its origin (what setElementPosition()
 	sets), rotation is in degrees, and left/top/right/bottom are the box it
@@ -3854,8 +4011,24 @@ bool QetScriptApi::setFolioTitle(int folioIndex, const QString &title)
 	return true;
 }
 
+/**
+	@brief QetScriptApi::setUndoGrouped
+	Set by QetScripting::runOnProject() while the whole run is one undo
+	macro. QUndoStack cannot undo or redo inside a macro: it prints a
+	warning and does nothing, so undo() and redo() say so instead.
+*/
+void QetScriptApi::setUndoGrouped(bool grouped)
+{
+	m_undo_grouped = grouped;
+}
+
 bool QetScriptApi::undo()
 {
+	if (m_undo_grouped) {
+		log(QStringLiteral("qet.undo: not available here -- this run is one "
+				   "undo step; press Ctrl+Z after it to undo it"));
+		return false;
+	}
 	if (!m_project || !m_project->undoStack()->canUndo()) return false;
 	m_project->undoStack()->undo();
 	return true;
@@ -3863,6 +4036,10 @@ bool QetScriptApi::undo()
 
 bool QetScriptApi::redo()
 {
+	if (m_undo_grouped) {
+		log(QStringLiteral("qet.redo: not available while this run is one undo step"));
+		return false;
+	}
 	if (!m_project || !m_project->undoStack()->canRedo()) return false;
 	m_project->undoStack()->redo();
 	return true;
@@ -4315,5 +4492,9 @@ bool QetScriptApi::zoomReset()
 */
 void QetScriptApi::showMessage(const QString &text)
 {
+	if (m_live_log) {
+		log(QStringLiteral("qet.showMessage: ") + text);
+		return;
+	}
 	QET::QetMessageBox::information(nullptr, QObject::tr("Script"), text);
 }

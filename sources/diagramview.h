@@ -58,6 +58,7 @@ class DiagramView : public PaletteGraphicsView
 		QAction          *m_paste_here = nullptr;
 		QAction			 *m_multi_paste = nullptr;
 		QAction          *m_create_template = nullptr;
+		QAction          *m_generate_cabinet_thumbnail = nullptr;
 		QMenu            *m_folio_report_menu = nullptr;
 		QPoint            m_paste_here_pos;
 		QPoint            m_press_pos;
@@ -184,6 +185,7 @@ class DiagramView : public PaletteGraphicsView
 		void zoomContent();
 		void zoomReset();
 		void zoomToRect(const QRectF &rect);
+		void centerOnCursor();
 		void cut();
 		void copy();
 		void paste(const QPointF & = QPointF(), QClipboard::Mode = QClipboard::Clipboard);
@@ -197,5 +199,6 @@ class DiagramView : public PaletteGraphicsView
 		void adjustGridToZoom();
 		void applyReadOnly();
 		void createTemplateFromSelection();
+		void generateCabinetThumbnails();
 };
 #endif

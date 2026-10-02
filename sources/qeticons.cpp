@@ -140,6 +140,7 @@ namespace QET {
 		QIcon Orientations;
 		QIcon PartArc;
 		QIcon PartBezier;
+		QIcon DrawFillet;
 		QIcon PartCircle;
 		QIcon PartEllipse;
 		QIcon PartLine;
@@ -540,6 +541,7 @@ void QET::Icons::initIcons()
 	Orientations        = QIcon::fromTheme("orientations");
 	PartArc             = QIcon::fromTheme("arc");
 	PartBezier          = QIcon::fromTheme("draw-bezier-curves");
+	DrawFillet          = QIcon::fromTheme("draw-fillet");
 	PartCircle          = QIcon::fromTheme("circle");
 	PartEllipse         = QIcon::fromTheme("ellipse");
 	PartLine            = QIcon::fromTheme("line");
@@ -568,10 +570,11 @@ void QET::Icons::initIcons()
 	// The elements panel shows the project root with this icon in a 50 px
 	// slot meant for element previews. The theme name "project" also
 	// carries the 128 px file used by the configuration dialog, and on a
-	// 2x display Qt's theme loader would pick it and fill the slot. Load
-	// the two small files directly so the item stays at 16/22 px.
-	ProjectFileGP.addFile(":/ico/themes/qet/16x16/project.png");
-	ProjectFileGP.addFile(":/ico/themes/qet/22x22/project.png");
+	// 2x display Qt's theme loader would pick it and fill the slot. Keep
+	// only the 16 and 22 px pixmaps so the item stays at that size.
+	ProjectFileGP = QIcon();
+	for (int size : {16, 22})
+		ProjectFileGP.addPixmap(Projects.pixmap(QSize(size, size), 1.0));
 	QETLogo             = QIcon::fromTheme("qet");
 	QETManual           = QIcon::fromTheme("help-contents");
 	QETLogo.addFile(":/ico/256x256/qet.png");

@@ -26,6 +26,7 @@
 #include <QColorDialog>
 #include <QGraphicsSceneContextMenuEvent>
 #include <QAction>
+#include <QDialog>
 #include <QFileInfo>
 #include <QSaveFile>
 #include <QSettings>
@@ -256,6 +257,34 @@ bool QET::attributeIsAReal(
 }
 
 /**
+	@brief QET::hasNonFiniteGeometry
+	@param shape a shape of an element definition (<line>, <rect>, <text>...)
+	@return true if one of its coordinates or sizes is "nan" or "inf".
+	The folio does not draw such a shape (see attributeIsAReal()), and the
+	element editor cannot show or edit it.
+*/
+bool QET::hasNonFiniteGeometry(const QDomElement &shape)
+{
+	static const QStringList geometry {
+		"x", "y", "x1", "y1", "x2", "y2", "width", "height", "diameter",
+		"rx", "ry", "start", "angle", "rotation", "length1", "length2"};
+	static const QRegularExpression polygon_point("^[xy][0-9]+$");
+
+	const QDomNamedNodeMap attributes = shape.attributes();
+	for (int i = 0 ; i < attributes.count() ; ++i)
+	{
+		const QDomAttr attribute = attributes.item(i).toAttr();
+		if (!geometry.contains(attribute.name())
+			&& !polygon_point.match(attribute.name()).hasMatch())
+			continue;
+		bool ok;
+		const qreal value = attribute.value().toDouble(&ok);
+		if (ok && !std::isfinite(value)) return(true);
+	}
+	return(false);
+}
+
+/**
 	@brief QET::infoFlagIsTrue
 	@see the header comment for why this exists rather than a bare
 	== "true" comparison.
@@ -270,6 +299,27 @@ bool QET::infoFlagIsTrue(const QString &value)
 		|| v == QLatin1String("1")
 		|| v == QLatin1String("yes")
 		|| v == QLatin1String("on");
+}
+
+/**
+	@brief QET::trackDialogGeometry
+	@see the declaration in qet.h for the rationale.
+*/
+void QET::trackDialogGeometry(QDialog *dialog, const QString &key)
+{
+	const QString settings_key = QStringLiteral("dialoggeometry/%1").arg(
+		key.isEmpty() ? QString::fromLatin1(dialog->metaObject()->className()) : key);
+
+	QSettings settings;
+	const QVariant geometry = settings.value(settings_key);
+	if (geometry.isValid()) {
+		dialog->restoreGeometry(geometry.toByteArray());
+	}
+
+	QObject::connect(dialog, &QDialog::finished, dialog, [dialog, settings_key]() {
+		QSettings settings;
+		settings.setValue(settings_key, dialog->saveGeometry());
+	});
 }
 
 /**

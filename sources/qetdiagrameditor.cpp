@@ -18,6 +18,11 @@
 #include "qetdiagrameditor.h"
 #ifdef QET_HAS_SCRIPTING
 #include "scripting/qetscripting.h"
+#include "scripting/scriptlibrary.h"
+#include "scripting/scriptmanagerdialog.h"
+#include "scripting/liveserver.h"
+#include "scripting/macrorecorder.h"
+#include "scripting/assistantinfo.h"
 #endif
 #include <QCoreApplication>
 #include <QToolButton>
@@ -38,6 +43,7 @@
 #endif
 #include "diagramevent/diagrameventaddshape.h"
 #include "diagramevent/diagrameventaddpath.h"
+#include "diagramevent/diagrameventfillet.h"
 #include "diagramevent/diagrameventaddtext.h"
 #include "diagramevent/diagrameventaddpaste.h"
 #include "diagramview.h"
@@ -81,7 +87,24 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
+#include <QDesktopServices>
 #include <QTimer>
+#include <QGuiApplication>
+#include <QPushButton>
+#include <QMessageBox>
+#include <QClipboard>
+#include <QPainter>
+#include <QJsonArray>
+#include <QVBoxLayout>
+#include <QListWidget>
+#include <QCheckBox>
+#include <QDockWidget>
+#include <QJsonObject>
+#include <QTime>
+#include <QStatusBar>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QUrl>
 #include <algorithm>
 #ifdef BUILD_WITHOUT_KF
 #	include "ui/nokde/kautosavefile.h"
@@ -162,6 +185,16 @@ QETDiagramEditor::QETDiagramEditor(const QStringList &files, QWidget *parent) :
 	readSettings();  // restoreGeometry before show()
 	show();
 	readSettingsState();  // restoreState() must be called after show() in Qt6
+#ifdef QET_HAS_SCRIPTING
+	setUpLiveIndicator();
+	setUpMacroRecorder();
+		//Live mode asks once per run, from the first window to open, and
+		//only once that window is on screen to anchor its warning.
+	QTimer::singleShot(0, this, [this]() { LiveServer::instance().askAndStart(this); });
+		//A toolbar saved as shown while there were scripts stays out of
+		//the way while there are none.
+	if (m_script_actions.isEmpty()) m_scripts_tool_bar->hide();
+#endif
 
 		//If valid file path is given as arguments
 	uint opened_projects = 0;
@@ -359,14 +392,17 @@ void QETDiagramEditor::setUpActions()
 	m_cut   = new QAction(QET::Icons::EditCut,   tr("Co&uper"), this);
 	m_copy  = new QAction(QET::Icons::EditCopy,  tr("Cop&ier"), this);
 	m_paste = new QAction(QET::Icons::EditPaste, tr("C&oller"), this);
+	m_paste_origin = new QAction(QET::Icons::EditPaste, tr("Coller au point d'origine"), this);
 
 	ShortcutManager::instance().registerAction(m_cut, "diagrameditor.cut", tr("Éditeur de schémas"), QKeySequence::Cut);
 	ShortcutManager::instance().registerAction(m_copy, "diagrameditor.copy", tr("Éditeur de schémas"), QKeySequence::Copy);
 	ShortcutManager::instance().registerAction(m_paste, "diagrameditor.paste", tr("Éditeur de schémas"), QKeySequence::Paste);
+	ShortcutManager::instance().registerAction(m_paste_origin, "diagrameditor.paste_origin", tr("Éditeur de schémas"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V));
 
 	m_cut   -> setStatusTip(tr("Transfère les éléments sélectionnés dans le presse-papier", "status bar tip"));
 	m_copy  -> setStatusTip(tr("Copie les éléments sélectionnés dans le presse-papier", "status bar tip"));
 	m_paste -> setStatusTip(tr("Place les éléments du presse-papier sur le folio", "status bar tip"));
+	m_paste_origin -> setStatusTip(tr("Place les éléments du presse-papier à leur position d'origine et déplace le curseur vers ce point", "status bar tip"));
 
 	connect(m_cut, &QAction::triggered, [this]() {
 		if (currentDiagramView())
@@ -376,7 +412,10 @@ void QETDiagramEditor::setUpActions()
 		if (currentDiagramView())
 			currentDiagramView()->copy();
 	});
-	connect(m_paste, &QAction::triggered, [this]() {
+
+		//Both paste shortcuts share one starter; they differ only in the
+		//placement mode handed to DiagramEventAddPaste.
+	const auto start_paste = [this](DiagramEventAddPaste::PastePlacement placement) {
 		auto *dv = currentDiagramView();
 		if (!dv || !dv->diagram()) return;
 
@@ -399,7 +438,13 @@ void QETDiagramEditor::setUpActions()
 		const QPointF start_pos = dv->mapToScene(view_pos);
 
 		dv->diagram()->setEventInterface(
-					new DiagramEventAddPaste(dv->diagram(), start_pos));
+					new DiagramEventAddPaste(dv->diagram(), start_pos, placement));
+	};
+	connect(m_paste, &QAction::triggered, [start_paste]() {
+		start_paste(DiagramEventAddPaste::UnderCursor);
+	});
+	connect(m_paste_origin, &QAction::triggered, [start_paste]() {
+		start_paste(DiagramEventAddPaste::AtOrigin);
 	});
 
 		//Duplicate: copy the selection and place it at a configured,
@@ -689,6 +734,59 @@ void QETDiagramEditor::setUpActions()
 		tr("Exécute un script JavaScript sur le projet courant (voir qet.*"
 		   " dans le script pour l'API disponible)"));
 	connect(m_run_script, &QAction::triggered, this, &QETDiagramEditor::slot_runScript);
+
+		//Record what the user does, for an assistant to turn into a script
+	{
+		QPixmap dot(32, 32);
+		dot.fill(Qt::transparent);
+		QPainter painter(&dot);
+		painter.setRenderHint(QPainter::Antialiasing);
+		painter.setPen(Qt::NoPen);
+		painter.setBrush(QColor(0xd0, 0x30, 0x30));
+		painter.drawEllipse(QRectF(6, 6, 20, 20));
+		painter.end();
+		m_record_macro = new QAction(QIcon(dot), tr("Enregistrer une macro"), this);
+	}
+	m_record_macro->setCheckable(true);
+	m_record_macro->setStatusTip(tr("Enregistre ce que vous faites sur le projet, pour qu'un "
+					"assistant IA en fasse un script ; recliquez pour arrêter"));
+	connect(m_record_macro, &QAction::triggered, this, [this](bool checked) {
+		if (checked) {
+			if (!MacroRecorder::instance().start(this)) m_record_macro->setChecked(false);
+		} else {
+			MacroRecorder::instance().stop();
+		}
+	});
+	ShortcutManager::instance().registerAction(m_record_macro, "diagrameditor.record_macro",
+						   tr("Éditeur de schémas"), QKeySequence());
+
+		//Write, try, give an icon to and delete stored scripts
+	m_manage_scripts = new QAction(tr("Gérer les scripts…"), this);
+	m_manage_scripts->setStatusTip(tr("Écrire un script et en faire un bouton avec une icône"));
+	connect(m_manage_scripts, &QAction::triggered, this, [this]() {
+		if (!m_script_manager) {
+			m_script_manager = new ScriptManagerDialog(
+				[this](const QString &path, const QString &name) {
+					runStoredScript(path, name);
+				}, this);
+		}
+		m_script_manager->show();
+		m_script_manager->raise();
+		m_script_manager->activateWindow();
+	});
+	ShortcutManager::instance().registerAction(m_manage_scripts, "diagrameditor.manage_scripts",
+						   tr("Éditeur de schémas"), QKeySequence());
+
+		//Stored scripts are files in a folder, written by hand, by the
+		//script manager or by an assistant: open it to add one.
+	m_open_scripts_folder = new QAction(QET::Icons::FolderOpen, tr("Ouvrir le dossier des scripts"), this);
+	m_open_scripts_folder->setStatusTip(
+		tr("Chaque fichier .js de ce dossier qui commence par un en-tête"
+		   " // ==QETScript== devient un bouton"));
+	connect(m_open_scripts_folder, &QAction::triggered, this, []() {
+		QDir().mkpath(ScriptLibrary::folder());
+		QDesktopServices::openUrl(QUrl::fromLocalFile(ScriptLibrary::folder()));
+	});
 #endif
 
 	#ifdef QET_EXPORT_PROJECT_DB
@@ -1000,6 +1098,7 @@ void QETDiagramEditor::setUpActions()
 	QAction *zoom_content = m_zoom_actions_group.addAction( QET::Icons::ZoomDraw,     tr("Zoom sur le contenu"));
 	QAction *zoom_fit     = m_zoom_actions_group.addAction( QET::Icons::ZoomFitBest,  tr("Zoom adapté"));
 	QAction *zoom_reset   = m_zoom_actions_group.addAction( QET::Icons::ZoomOriginal, tr("Pas de zoom"));
+	QAction *center_on_cursor = m_zoom_actions_group.addAction(tr("Centrer sur le curseur"));
 	m_zoom_action_toolBar << zoom_content << zoom_fit << zoom_reset;
 
 	ShortcutManager::instance().registerAction(zoom_in, "diagrameditor.zoom_in", tr("Éditeur de schémas"), QKeySequence::ZoomIn);
@@ -1007,18 +1106,21 @@ void QETDiagramEditor::setUpActions()
 	ShortcutManager::instance().registerAction(zoom_content, "diagrameditor.zoom_content", tr("Éditeur de schémas"), Qt::CTRL | Qt::Key_8);
 	ShortcutManager::instance().registerAction(zoom_fit, "diagrameditor.zoom_fit", tr("Éditeur de schémas"), Qt::CTRL | Qt::Key_9);
 	ShortcutManager::instance().registerAction(zoom_reset, "diagrameditor.zoom_reset", tr("Éditeur de schémas"), Qt::CTRL | Qt::Key_0);
+	ShortcutManager::instance().registerAction(center_on_cursor, "diagrameditor.center_on_cursor", tr("Éditeur de schémas"), QKeySequence());
 
 	zoom_in     ->setStatusTip(tr("Agrandit le folio", "status bar tip"));
 	zoom_out    ->setStatusTip(tr("Rétrécit le folio", "status bar tip"));
 	zoom_content->setStatusTip(tr("Adapte le zoom de façon à afficher tout le contenu du folio indépendamment du cadre"));
 	zoom_fit    ->setStatusTip(tr("Adapte le zoom exactement sur le cadre du folio", "status bar tip"));
 	zoom_reset  ->setStatusTip(tr("Restaure le zoom par défaut", "status bar tip"));
+	center_on_cursor->setStatusTip(tr("Centre le folio sur le point sous le curseur de la souris, sans changer le zoom", "status bar tip"));
 
 	zoom_in     ->setData("zoom_in");
 	zoom_out    ->setData("zoom_out");
 	zoom_content->setData("zoom_content");
 	zoom_fit    ->setData("zoom_fit");
 	zoom_reset  ->setData("zoom_reset");
+	center_on_cursor->setData("center_on_cursor");
 
 	connect(&m_zoom_actions_group, &QActionGroup::triggered, this, &QETDiagramEditor::zoomGroupTriggered);
 
@@ -1044,8 +1146,10 @@ void QETDiagramEditor::setUpActions()
 	QAction *add_line	   = m_add_item_actions_group.addAction(QET::Icons::PartLine,      tr("Ajouter une ligne", "Draw line"));
 	QAction *add_rectangle = m_add_item_actions_group.addAction(QET::Icons::PartRectangle, tr("Ajouter un rectangle"));
 	QAction *add_ellipse   = m_add_item_actions_group.addAction(QET::Icons::PartEllipse,   tr("Ajouter une ellipse"));
+	QAction *add_arc       = m_add_item_actions_group.addAction(QET::Icons::PartArc,       tr("Ajouter un arc"));
 	QAction *add_polyline  = m_add_item_actions_group.addAction(QET::Icons::PartPolygon,   tr("Ajouter une polyligne"));
 	QAction *add_path      = m_add_item_actions_group.addAction(QET::Icons::PartBezier,   tr("Ajouter une courbe"));
+	QAction *add_fillet    = m_add_item_actions_group.addAction(QET::Icons::DrawFillet,   tr("Ajouter un congé"));
 	QAction *add_terminal_strip = m_add_item_actions_group.addAction(QET::Icons::TerminalStrip, tr("Ajouter un plan de bornes"));
 
 	add_text     ->setStatusTip(tr("Ajoute un champ de texte sur le folio actuel"));
@@ -1056,8 +1160,10 @@ void QETDiagramEditor::setUpActions()
 	add_line     ->setStatusTip(tr("Ajoute une ligne sur le folio actuel"));
 	add_rectangle->setStatusTip(tr("Ajoute un rectangle sur le folio actuel"));
 	add_ellipse  ->setStatusTip(tr("Ajoute une ellipse sur le folio actuel"));
+	add_arc      ->setStatusTip(tr("Ajoute un arc sur le folio actuel"));
 	add_polyline ->setStatusTip(tr("Ajoute une polyligne sur le folio actuel"));
 	add_path     ->setStatusTip(tr("Ajoute une courbe de Bézier sur le folio actuel"));
+	add_fillet   ->setStatusTip(tr("Arrondit le coin entre deux lignes du folio actuel"));
 	add_terminal_strip->setStatusTip(tr("Ajoute un plan de bornier sur le folio actuel"));
 
 	add_text     ->setData(QStringLiteral("text"));
@@ -1068,16 +1174,20 @@ void QETDiagramEditor::setUpActions()
 	add_line     ->setData(QStringLiteral("line"));
 	add_rectangle->setData(QStringLiteral("rectangle"));
 	add_ellipse  ->setData(QStringLiteral("ellipse"));
+	add_arc      ->setData(QStringLiteral("arc"));
 	add_polyline ->setData(QStringLiteral("polyline"));
 	add_path     ->setData(QStringLiteral("path"));
+	add_fillet   ->setData(QStringLiteral("fillet"));
 	add_terminal_strip->setData(QStringLiteral("terminal_strip"));
 
 	add_text->setCheckable(true);
 	add_line->setCheckable(true);
 	add_rectangle->setCheckable(true);
 	add_ellipse->setCheckable(true);
+	add_arc->setCheckable(true);
 	add_polyline->setCheckable(true);
 	add_path->setCheckable(true);
+	add_fillet->setCheckable(true);
 
 	connect(&m_add_item_actions_group, &QActionGroup::triggered, this, &QETDiagramEditor::addItemGroupTriggered);
 		//No default key, but an id: they can then be found by the command
@@ -1186,6 +1296,14 @@ void QETDiagramEditor::setUpToolBar()
 	addToolBar(Qt::TopToolBarArea, diagram_tool_bar);
 	addToolBar(Qt::TopToolBarArea, m_add_item_tool_bar);
 	addToolBar(Qt::TopToolBarArea, m_depth_tool_bar);
+
+	m_scripts_tool_bar = new QToolBar(tr("Scripts", "toolbar title"), this);
+	m_scripts_tool_bar->setObjectName("scripts");
+	addToolBar(Qt::TopToolBarArea, m_scripts_tool_bar);
+#ifndef QET_HAS_SCRIPTING
+	m_scripts_tool_bar->toggleViewAction()->setVisible(false);
+	m_scripts_tool_bar->hide();
+#endif
 }
 
 /**
@@ -1239,6 +1357,7 @@ void QETDiagramEditor::setUpMenu()
 	menu_edition -> addAction(m_cut);
 	menu_edition -> addAction(m_copy);
 	menu_edition -> addAction(m_paste);
+	menu_edition -> addAction(m_paste_origin);
 	menu_edition -> addAction(m_duplicate);
 	menu_edition -> addAction(m_configure_duplicate);
 	menu_edition -> addAction(m_insert_last_element);
@@ -1306,7 +1425,11 @@ void QETDiagramEditor::setUpMenu()
 	menu_project -> addAction(m_terminal_numbering);
 	menu_project -> addAction(m_reload_element_drawings);
 #ifdef QET_HAS_SCRIPTING
-	menu_project -> addAction(m_run_script);
+	m_scripts_menu = menu_project -> addMenu(tr("Scripts"));
+	rebuildScriptActions();
+	connect(&ScriptLibrary::instance(), &ScriptLibrary::changed,
+		this, &QETDiagramEditor::rebuildScriptActions);
+	AssistantInfo::watch();
 #endif
 #ifdef QET_EXPORT_PROJECT_DB
 	menu_project -> addSeparator();
@@ -1782,6 +1905,17 @@ ProjectView *QETDiagramEditor::currentProjectView() const
 }
 
 /**
+	@brief QETDiagramEditor::templateSaved
+	List a template saved from a folio in this editor's templates tab.
+	@param location : the saved .qetmak file
+*/
+void QETDiagramEditor::templateSaved(const ElementsLocation &location)
+{
+	if (m_element_collection_widget)
+		m_element_collection_widget->addTemplate(location);
+}
+
+/**
 	@brief QETDiagramEditor::currentProject
 	@return the current edited project.
 	This function can return nullptr.
@@ -1933,6 +2067,8 @@ void QETDiagramEditor::zoomGroupTriggered(QAction *action)
 		dv->zoomFit();
 	else if (value == "zoom_reset")
 		dv->zoomReset();
+	else if (value == "center_on_cursor")
+		dv->centerOnCursor();
 }
 
 /**
@@ -2007,12 +2143,16 @@ void QETDiagramEditor::addItemGroupTriggered(QAction *action)
 		diagram_event = new DiagramEventAddShape (d, QetShapeItem::Rectangle);
 	else if (value == "ellipse")
 		diagram_event = new DiagramEventAddShape (d, QetShapeItem::Ellipse);
+	else if (value == "arc")
+		diagram_event = new DiagramEventAddShape (d, QetShapeItem::Ellipse, true);
 	else if (value == "polyline")
 		diagram_event = new DiagramEventAddShape (d, QetShapeItem::Polygon);
 	else if (value == "path")
 	{
 		diagram_event = new DiagramEventAddPath (d);
 	}
+	else if (value == "fillet")
+		diagram_event = new DiagramEventFillet (d);
 	else if (value == "image")
 	{
 		DiagramEventAddImage *deai = new DiagramEventAddImage(d);
@@ -2344,6 +2484,9 @@ void QETDiagramEditor::slot_updateUndoStack()
 */
 void QETDiagramEditor::slot_updateComplexActions()
 {
+#ifdef QET_HAS_SCRIPTING
+	updateScriptActions();
+#endif
 	DiagramView *dv = currentDiagramView();
 	if(!dv)
 	{
@@ -2555,6 +2698,7 @@ void QETDiagramEditor::slot_updatePasteAction()
 
 	// pour coller, il faut un schema ouvert et un schema dans le presse-papier
 	m_paste -> setEnabled(editable_diagram && Diagram::clipboardMayContainDiagram());
+	m_paste_origin -> setEnabled(editable_diagram && Diagram::clipboardMayContainDiagram());
 }
 
 /**
@@ -3686,28 +3830,7 @@ void QETDiagramEditor::slot_runScript() {
 	QETProject *project = currentProject();
 	if (!project) return;
 
-	// Scripting is off until somebody says otherwise, so the first use has
-	// to ask. Asking here rather than greying the action out keeps the
-	// feature discoverable: a disabled menu entry tells a user that
-	// something exists and nothing about how to have it.
-	if (!QetSettings::scriptingEnabled()) {
-		const QMessageBox::StandardButton answer = QET::QetMessageBox::question(
-			this,
-			tr("Exécuter un script"),
-			tr("Les scripts sont désactivés.\n\n"
-			   "Un script s'exécute avec vos droits : il peut lire et "
-			   "modifier le projet ouvert et écrire des fichiers. "
-			   "N'exécutez que des scripts dont vous connaissez "
-			   "l'origine.\n\n"
-			   "Activer les scripts ? Ce réglage est modifiable dans "
-			   "Configurer QElectroTech > Général > Projets."),
-			QMessageBox::Yes | QMessageBox::Cancel,
-			QMessageBox::Cancel);
-		if (answer != QMessageBox::Yes) {
-			return;
-		}
-		QetSettings::setScriptingEnabled(true);
-	}
+	if (!ensureScriptingEnabled(tr("Exécuter un script"))) return;
 
 	const QString script_path = QFileDialog::getOpenFileName(
 		this,
@@ -3718,6 +3841,302 @@ void QETDiagramEditor::slot_runScript() {
 	if (script_path.isEmpty()) return;
 
 	QetScripting::runOnProject(script_path, project, currentDiagramView());
+}
+
+/**
+	@brief QETDiagramEditor::ensureScriptingEnabled
+	@return true if scripts may run, asking to switch them on if they are
+	off. Shared by "Run a script..." and the stored script buttons, so
+	there is one prompt to keep right.
+*/
+bool QETDiagramEditor::ensureScriptingEnabled(const QString &title)
+{
+	// Scripting is off until somebody says otherwise, so the first use has
+	// to ask. Asking here rather than greying the action out keeps the
+	// feature discoverable: a disabled menu entry tells a user that
+	// something exists and nothing about how to have it.
+	if (!QetSettings::scriptingEnabled()) {
+		const QMessageBox::StandardButton answer = QET::QetMessageBox::question(
+			this,
+			title,
+			tr("Les scripts sont désactivés.\n\n"
+			   "Un script s'exécute avec vos droits : il peut lire et "
+			   "modifier le projet ouvert et écrire des fichiers. "
+			   "N'exécutez que des scripts dont vous connaissez "
+			   "l'origine.\n\n"
+			   "Activer les scripts ? Ce réglage est modifiable dans "
+			   "Configurer QElectroTech > Général > Projets."),
+			QMessageBox::Yes | QMessageBox::Cancel,
+			QMessageBox::Cancel);
+		if (answer != QMessageBox::Yes) {
+			return false;
+		}
+		QetSettings::setScriptingEnabled(true);
+	}
+	return true;
+}
+
+/**
+	@brief QETDiagramEditor::runStoredScript
+	Run the stored script at @a path on the current project, as one undo
+	step named after the script. The file is read again on every run, so
+	an edit to it takes effect on the next click.
+*/
+void QETDiagramEditor::runStoredScript(const QString &path, const QString &name)
+{
+	QETProject *project = currentProject();
+	if (!project) return;
+	if (!ensureScriptingEnabled(name)) return;
+	QetScripting::runOnProject(path, project, currentDiagramView(), name);
+}
+
+/**
+	@brief QETDiagramEditor::rebuildScriptActions
+	One action per stored script, in the Projet > Scripts menu and on the
+	Scripts toolbar, registered with ShortcutManager under
+	diagrameditor.script.<file name>: that one registration is what lists
+	it in the shortcut settings, the shortcut bar (S) and command search.
+	Rebuilt from scratch whenever the scripts folder changes.
+*/
+void QETDiagramEditor::rebuildScriptActions()
+{
+	for (QAction *action : std::as_const(m_script_actions)) {
+		ShortcutManager::instance().unregisterAction(
+			action, action->property("qet_script_action_id").toString());
+		delete action;
+	}
+	m_script_actions.clear();
+	m_scripts_menu->clear();
+	m_scripts_tool_bar->clear();
+
+	const ScriptLibrary &library = ScriptLibrary::instance();
+	for (const ScriptLibrary::Script &script : library.scripts()) {
+		const ScriptHeader &h = script.header;
+		auto *action = new QAction(ScriptLibrary::icon(script), h.name, this);
+		action->setStatusTip(h.tooltip);
+		action->setToolTip(h.tooltip.isEmpty() ? h.name : h.name + QLatin1Char('\n') + h.tooltip);
+		action->setProperty("qet_script_action_id", ScriptLibrary::actionId(h.id));
+		action->setProperty("qet_script_context", h.context);
+		connect(action, &QAction::triggered, this, [this, path = script.path, name = h.name]() {
+			runStoredScript(path, name);
+		});
+		ShortcutManager::instance().registerAction(action, ScriptLibrary::actionId(h.id),
+							   tr("Scripts"),
+							   QKeySequence::fromString(h.shortcut));
+		m_scripts_menu->addAction(action);
+		m_scripts_tool_bar->addAction(action);
+		m_script_actions << action;
+	}
+
+		//A script with a header that cannot be used gets no button: say
+		//which file and why, where its author will look for the button.
+	const QStringList errors = library.errors();
+	if (!errors.isEmpty()) {
+		m_scripts_menu->addSeparator();
+		for (const QString &error : errors) {
+			QAction *ignored = m_scripts_menu->addAction(QET::Icons::DialogInformation,
+								     tr("Ignoré : %1").arg(error));
+			ignored->setEnabled(false);
+		}
+	}
+
+	m_scripts_menu->addSeparator();
+	m_scripts_menu->addAction(m_record_macro);
+	m_scripts_menu->addAction(m_manage_scripts);
+	m_scripts_menu->addAction(m_run_script);
+	m_scripts_menu->addAction(m_open_scripts_folder);
+
+		//Show the toolbar when the first script arrives, hide it when the
+		//last one goes; in between it is the user's to show or hide.
+	const bool has_scripts = !m_script_actions.isEmpty();
+	if (has_scripts != m_had_scripts) m_scripts_tool_bar->setVisible(has_scripts);
+	m_had_scripts = has_scripts;
+
+	updateScriptActions();
+}
+
+/**
+	@brief QETDiagramEditor::setUpMacroRecorder
+	While recording: the action checked, and "● Enregistrement : N étapes"
+	with Arrêter on the status bar. At the end, where it was saved and the
+	request to paste into the assistant.
+*/
+void QETDiagramEditor::setUpMacroRecorder()
+{
+	auto *box = new QWidget(this);
+	auto *layout = new QHBoxLayout(box);
+	layout->setContentsMargins(0, 0, 0, 0);
+	auto *label = new QLabel(box);
+	label->setStyleSheet(QStringLiteral("color: #d03030; font-weight: bold"));
+	auto *stop = new QToolButton(box);
+	stop->setText(tr("Arrêter"));
+	stop->setToolTip(tr("Arrêter l'enregistrement de la macro"));
+	layout->addWidget(label);
+	layout->addWidget(stop);
+	statusBar()->addPermanentWidget(box);
+	box->hide();
+	connect(stop, &QToolButton::clicked, this, []() { MacroRecorder::instance().stop(); });
+
+	connect(&MacroRecorder::instance(), &MacroRecorder::stateChanged, box,
+		[this, box, label](bool recording, int steps) {
+		box->setVisible(recording);
+		label->setText(tr("● Enregistrement : %n étape(s)", nullptr, steps));
+		const QSignalBlocker blocker(m_record_macro);
+		m_record_macro->setChecked(recording);
+		updateScriptActions();
+	});
+	connect(&MacroRecorder::instance(), &MacroRecorder::finished, this,
+		[this](const QJsonObject &recording, QETDiagramEditor *editor) {
+		if (editor == this) macroRecorded(recording);
+	});
+}
+
+void QETDiagramEditor::macroRecorded(const QJsonObject &recording)
+{
+	const int steps = recording.value(QStringLiteral("steps")).toArray().size();
+	const QString dir = recording.value(QStringLiteral("folder")).toString();
+	QMessageBox box(QMessageBox::Information, tr("Macro enregistrée"),
+			tr("« %1 » : %n étape(s).\n\nPour en faire un script, demandez-le à "
+			   "votre assistant IA : le bouton ci-dessous copie la demande, il "
+			   "suffit de la coller dans sa fenêtre.", nullptr, steps)
+			.arg(recording.value(QStringLiteral("name")).toString()),
+			QMessageBox::NoButton, this);
+	box.setInformativeText(QDir::toNativeSeparators(dir)
+			       + (recording.value(QStringLiteral("complete")).toBool()
+				  ? QString() : QStringLiteral("\n") + recording.value(QStringLiteral("note")).toString()));
+	QPushButton *copy = box.addButton(tr("&Copier la demande pour l'assistant"), QMessageBox::AcceptRole);
+	QPushButton *open = box.addButton(tr("&Ouvrir le dossier"), QMessageBox::ActionRole);
+	box.addButton(tr("&Fermer"), QMessageBox::RejectRole);
+	box.setDefaultButton(copy);
+	box.exec();
+	if (box.clickedButton() == copy) {
+		QGuiApplication::clipboard()->setText(MacroRecorder::assistantRequest(recording));
+		statusBar()->showMessage(tr("Demande copiée : collez-la dans la fenêtre de l'assistant"), 8000);
+	} else if (box.clickedButton() == open) {
+		QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+	}
+}
+
+/**
+	@brief QETDiagramEditor::setUpLiveIndicator
+	"Assistant connecté" and a Stop button on the status bar, shown
+	whenever live mode is open, so it is never on without being seen.
+*/
+void QETDiagramEditor::setUpLiveIndicator()
+{
+	auto *box = new QWidget(this);
+	auto *layout = new QHBoxLayout(box);
+	layout->setContentsMargins(0, 0, 0, 0);
+	auto *label = new QLabel(box);
+	auto *stop = new QToolButton(box);
+	stop->setText(tr("Arrêter"));
+	stop->setToolTip(tr("Couper la connexion de l'assistant pour le reste de la session"));
+	layout->addWidget(label);
+	layout->addWidget(stop);
+	statusBar()->addPermanentWidget(box);
+	connect(stop, &QToolButton::clicked, this, []() { LiveServer::instance().stop(); });
+
+	auto update = [box, label](LiveServer::State state) {
+		box->setVisible(state != LiveServer::Off);
+		label->setText(state == LiveServer::Connected
+			       ? tr("Mode direct : assistant connecté")
+			       : tr("Mode direct : en attente d'un assistant"));
+		label->setStyleSheet(state == LiveServer::Connected
+				     ? QStringLiteral("font-weight: bold") : QString());
+	};
+	connect(&LiveServer::instance(), &LiveServer::stateChanged, box, update);
+	update(LiveServer::instance().state());
+
+		//The Assistant dock: every action, and whether to be asked first
+	auto *dock = new QDockWidget(tr("Assistant"), this);
+	dock->setObjectName(QStringLiteral("assistant_dock"));
+	auto *content = new QWidget(dock);
+	auto *dock_layout = new QVBoxLayout(content);
+	auto *ask = new QCheckBox(tr("Demander avant d'exécuter un script écrit par l'assistant"), content);
+	ask->setChecked(LiveServer::instance().askFirst());
+	ask->setToolTip(tr("Pour cette session seulement : chaque démarrage redemande"));
+	auto *log = new QListWidget(content);
+	log->setWordWrap(true);
+	dock_layout->addWidget(ask);
+	dock_layout->addWidget(log);
+	dock->setWidget(content);
+	addDockWidget(Qt::RightDockWidgetArea, dock);
+	dock->hide();
+	connect(ask, &QCheckBox::toggled, &LiveServer::instance(), &LiveServer::setAskFirst);
+	connect(&LiveServer::instance(), &LiveServer::askFirstChanged, ask, &QCheckBox::setChecked);
+	connect(&LiveServer::instance(), &LiveServer::stateChanged, dock,
+		[dock](LiveServer::State state) {
+		if (state == LiveServer::Waiting) dock->show();
+		else if (state == LiveServer::Off) dock->hide();
+	});
+	connect(&LiveServer::instance(), &LiveServer::handled, log,
+		[log](const QJsonObject &request, const QJsonObject &answer) {
+		const QString cmd = request.value(QStringLiteral("cmd")).toString();
+		if (cmd == QLatin1String("status")) return;
+		const bool ok = answer.value(QStringLiteral("ok")).toBool();
+		QString what = answer.value(QStringLiteral("undo")).toString();
+		for (const char *key : {"name", "script", "action"})
+			if (what.isEmpty()) what = request.value(QLatin1String(key)).toString();
+		if (what.isEmpty()) what = cmd;
+		auto *item = new QListWidgetItem(QStringLiteral("%1  %2  %3")
+			.arg(QTime::currentTime().toString(QStringLiteral("HH:mm:ss")),
+			     ok ? QStringLiteral("✓") : QStringLiteral("✗"), what));
+		QStringList details;
+		if (!ok) details << answer.value(QStringLiteral("error")).toString();
+		const QJsonArray lines = answer.value(QStringLiteral("log")).toArray();
+		for (const QJsonValue &l : lines) details << l.toString();
+		const QString source = request.value(QStringLiteral("source")).toString();
+		if (!source.isEmpty()) details << QString() << source;
+		item->setToolTip(details.join(QLatin1Char('\n')));
+		item->setData(Qt::UserRole, details.join(QLatin1Char('\n')));
+		log->insertItem(0, item);
+	});
+	connect(log, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
+		QET::QetMessageBox::information(this, tr("Assistant"),
+						item->data(Qt::UserRole).toString());
+	});
+		//What the assistant just did, where the user is already looking
+	connect(&LiveServer::instance(), &LiveServer::handled, box,
+		[label](const QJsonObject &request, const QJsonObject &answer) {
+		const QString cmd = request.value(QStringLiteral("cmd")).toString();
+		if (cmd == QLatin1String("status")) return;
+		QString what = answer.value(QStringLiteral("undo")).toString();
+		if (what.isEmpty())
+			what = request.value(QStringLiteral("name")).toString();
+		if (what.isEmpty())
+			what = request.value(QStringLiteral("script")).toString();
+		if (what.isEmpty())
+			what = request.value(QStringLiteral("action")).toString();
+		if (what.isEmpty())
+			what = cmd;
+		label->setText(tr("Mode direct : %1 %2 à %3")
+			       .arg(answer.value(QStringLiteral("ok")).toBool() ? QStringLiteral("✓")
+										  : QStringLiteral("✗"),
+				    what, QTime::currentTime().toString(QStringLiteral("HH:mm:ss"))));
+		label->setToolTip(answer.value(QStringLiteral("error")).toString());
+	});
+}
+
+/**
+	@brief QETDiagramEditor::updateScriptActions
+	Enable each script for what its header's @context asks for: always
+	(canvas), with something selected (selection), or with a conductor
+	selected (conductor). None without an open project.
+*/
+void QETDiagramEditor::updateScriptActions()
+{
+	DiagramView *dv = currentDiagramView();
+	Diagram *diagram = dv ? dv->diagram() : nullptr;
+	const bool selection = diagram && !diagram->selectedItems().isEmpty();
+	const bool conductor = diagram && !diagram->selectedConductors().isEmpty();
+	m_record_macro->setEnabled(currentProject() || MacroRecorder::instance().isRecording());
+	for (QAction *action : std::as_const(m_script_actions)) {
+		const QString context = action->property("qet_script_context").toString();
+		bool enabled = currentProject() != nullptr;
+		if (context == QLatin1String("selection")) enabled = enabled && selection;
+		else if (context == QLatin1String("conductor")) enabled = enabled && conductor;
+		action->setEnabled(enabled);
+	}
 }
 #endif
 

@@ -354,6 +354,7 @@ class QetScriptApi : public QObject
 		Q_INVOKABLE QString projectTitle() const;
 		Q_INVOKABLE QString filePath() const;
 		Q_INVOKABLE int folioCount() const;
+		Q_INVOKABLE int currentFolio() const;
 		Q_INVOKABLE QString folioTitle(int index) const;
 		Q_INVOKABLE QString folioUuid(int index) const;
 		Q_INVOKABLE int folioIndex(const QString &uuid) const;
@@ -538,6 +539,11 @@ class QetScriptApi : public QObject
 		Q_INVOKABLE QString folioBorder(int folioIndex, const QString &property) const;
 		Q_INVOKABLE bool setFolioBorder(int folioIndex, const QString &property, const QString &value);
 
+		// -- the conductor defaults of a folio (Folio properties > Conductors),
+		//    or with folioIndex -1, the project's defaults for new folios --
+		Q_INVOKABLE QString conductorDefault(int folioIndex, const QString &property) const;
+		Q_INVOKABLE bool setConductorDefault(int folioIndex, const QString &property, const QString &value);
+
 		// -- title block templates: which exist, embedding one into the project --
 		Q_INVOKABLE QStringList titleBlockTemplates() const;
 		Q_INVOKABLE bool embedTitleBlockTemplate(const QString &name);
@@ -578,6 +584,13 @@ class QetScriptApi : public QObject
 		// -- logging: a script has no console of its own --
 		Q_INVOKABLE void log(const QString &message);
 
+		// -- what a script can call, read from this class itself --
+		Q_INVOKABLE QStringList apiSignatures() const;
+		static QStringList signatures();
+
+		void setUndoGrouped(bool grouped);
+		void setLive(QStringList *log);
+
 	private:
 		bool runFlag(const QString &flag, const QStringList &args);
 		Element *findElement(int folioIndex, const QString &elementUuid) const;
@@ -597,6 +610,8 @@ class QetScriptApi : public QObject
 
 		QETProject *m_project;
 		DiagramView *m_view;
+		bool m_undo_grouped = false;
+		QStringList *m_live_log = nullptr;	///< set for a live run: log() and showMessage() go here
 		QString m_query_error;
 };
 

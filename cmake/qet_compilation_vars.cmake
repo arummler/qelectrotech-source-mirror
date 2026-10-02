@@ -177,6 +177,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/conductornumexport.cpp
   ${QET_DIR}/sources/wiringlistexport.h
   ${QET_DIR}/sources/wiringlistexport.cpp
+  ${QET_DIR}/sources/wirehops.h
+  ${QET_DIR}/sources/wirehops.cpp
   ${QET_DIR}/sources/ui/wiringlistdialog.h
   ${QET_DIR}/sources/ui/wiringlistdialog.cpp
   ${QET_DIR}/sources/conductornumexport.h
@@ -186,6 +188,7 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/conductorprofile.h
   ${QET_DIR}/sources/conductorproperties.cpp
   ${QET_DIR}/sources/conductorproperties.h
+  ${QET_DIR}/sources/conductormultiedit.h
   ${QET_DIR}/sources/conductorsegment.cpp
   ${QET_DIR}/sources/conductorsegment.h
   ${QET_DIR}/sources/conductorsegmentprofile.h
@@ -350,6 +353,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/diagramevent/diagrameventaddimage.h
   ${QET_DIR}/sources/diagramevent/diagrameventaddshape.cpp
   ${QET_DIR}/sources/diagramevent/diagrameventaddshape.h
+  ${QET_DIR}/sources/diagramevent/diagrameventfillet.cpp
+  ${QET_DIR}/sources/diagramevent/diagrameventfillet.h
   ${QET_DIR}/sources/diagramevent/diagrameventaddpath.cpp
   ${QET_DIR}/sources/diagramevent/diagrameventaddpath.h
   ${QET_DIR}/sources/diagramevent/diagrameventaddtext.cpp
@@ -475,6 +480,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ElementsCollection/elementstreeview.h
   ${QET_DIR}/sources/ElementsCollection/fileelementcollectionitem.cpp
   ${QET_DIR}/sources/ElementsCollection/fileelementcollectionitem.h
+  ${QET_DIR}/sources/ElementsCollection/qetlabelsfile.cpp
+  ${QET_DIR}/sources/ElementsCollection/qetlabelsfile.h
   ${QET_DIR}/sources/ElementsCollection/terminaluuids.cpp
   ${QET_DIR}/sources/ElementsCollection/terminaluuids.h
   ${QET_DIR}/sources/ElementsCollection/xmlelementcollection.cpp
@@ -752,6 +759,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ui/diagrampropertieseditordockwidget.h
   ${QET_DIR}/sources/ui/backupdialog.cpp
   ${QET_DIR}/sources/ui/backupdialog.h
+  ${QET_DIR}/sources/ui/backuprestoredialog.cpp
+  ${QET_DIR}/sources/ui/backuprestoredialog.h
   ${QET_DIR}/sources/ui/dialogwaiting.cpp
   ${QET_DIR}/sources/ui/dialogwaiting.h
   ${QET_DIR}/sources/ui/duplicateoffsetdialog.cpp
@@ -798,6 +807,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ui/multipastedialog.h
   ${QET_DIR}/sources/ui/potentialselectordialog.cpp
   ${QET_DIR}/sources/ui/potentialselectordialog.h
+  ${QET_DIR}/sources/ui/prefixconfigurationdialog.cpp
+  ${QET_DIR}/sources/ui/prefixconfigurationdialog.h
   ${QET_DIR}/sources/ui/projectpropertiesdialog.cpp
   ${QET_DIR}/sources/ui/projectpropertiesdialog.h
   ${QET_DIR}/sources/ui/reportpropertiewidget.cpp
@@ -863,6 +874,8 @@ set(QET_SRC_FILES
 
   ${QET_DIR}/sources/utils/conductorcreator.cpp
   ${QET_DIR}/sources/utils/conductorcreator.h
+  ${QET_DIR}/sources/utils/colordialogdoubleclick.cpp
+  ${QET_DIR}/sources/utils/colordialogdoubleclick.h
   ${QET_DIR}/sources/utils/macosxopenevent.cpp
   ${QET_DIR}/sources/utils/macosxopenevent.h
   ${QET_DIR}/sources/utils/qetsettings.cpp
@@ -913,6 +926,17 @@ list(APPEND QET_SRC_FILES
   ${QET_DIR}/sources/scripting/qetscriptapi.h
   ${QET_DIR}/sources/scripting/qetscripting.cpp
   ${QET_DIR}/sources/scripting/qetscripting.h
+  ${QET_DIR}/sources/scripting/scriptheader.h
+  ${QET_DIR}/sources/scripting/scriptlibrary.cpp
+  ${QET_DIR}/sources/scripting/scriptlibrary.h
+  ${QET_DIR}/sources/scripting/scriptmanagerdialog.cpp
+  ${QET_DIR}/sources/scripting/scriptmanagerdialog.h
+  ${QET_DIR}/sources/scripting/liveserver.cpp
+  ${QET_DIR}/sources/scripting/liveserver.h
+  ${QET_DIR}/sources/scripting/macrorecorder.cpp
+  ${QET_DIR}/sources/scripting/macrorecorder.h
+  ${QET_DIR}/sources/scripting/assistantinfo.cpp
+  ${QET_DIR}/sources/scripting/assistantinfo.h
 )
 
 if(QET_SPACEMOUSE_ENABLED)

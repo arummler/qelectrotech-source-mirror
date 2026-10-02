@@ -28,6 +28,7 @@
 #include "properties/xrefproperties.h"
 #include "titleblock/templatescollection.h"
 #include "titleblockproperties.h"
+#include "wirehops.h"
 #include "diagram.h"
 #ifdef BUILD_WITHOUT_KF
 #	include "ui/nokde/kautosavefile.h"
@@ -38,6 +39,8 @@
 #include <QHash>
 #include <QSet>
 #include <QFuture>
+
+#include <array>
 
 class Diagram;
 class ElementsLocation;
@@ -128,6 +131,10 @@ class QETProject : public QObject
 		/// process can destroy the project before the write finishes (crash).
 		static void setBackupEnabled(bool enabled);
 
+		/// Number of crash-recovery snapshots kept per project, written in
+		/// turn by writeBackup(), so one bad write cannot replace the only copy
+		static constexpr int BackupGenerations = 3;
+
 			///DEFAULT PROPERTIES
 		BorderProperties defaultBorderProperties() const;
 		void             setDefaultBorderProperties(const BorderProperties &);
@@ -202,6 +209,8 @@ class QETProject : public QObject
 		bool autoElement () const;
 		bool autoFolio () const;
 		void setAutoConductor (bool ac);
+		WireHops::Mode wireHops() const;
+		void setWireHops(WireHops::Mode mode);
 		void setAutoBreakConductor (bool abc);
 		void setAutoElement (bool ae);
 		void autoFolioNumberingNewFolios ();
@@ -298,10 +307,12 @@ class QETProject : public QObject
 		void readDefaultPropertiesXml(QDomDocument &xml_project);
 		void readTerminalStripXml(const QDomDocument &xml_project);
 		void readUsageXml(QDomDocument &xml_project);
+		void readWireHopsXml(QDomDocument &xml_project);
 
 		void writeProjectPropertiesXml(QDomElement &);
 		void writeDefaultPropertiesXml(QDomElement &);
 		void writeUsageXml(QDomElement &);
+		void writeWireHopsXml(QDomElement &);
 		void addDiagram(Diagram *diagram, int pos = -1);
 		void detachDiagram(Diagram *diagram);
 		void writeBackup();
@@ -359,6 +370,7 @@ class QETProject : public QObject
 		QHash <QString, NumerotationContext> m_element_autonum; //Title and NumContext hash
 		QString m_current_element_autonum;
 		bool m_auto_conductor = true;
+		WireHops::Mode m_wire_hops = WireHops::Mode::None;
 	bool m_auto_break_conductor = false;
 		XmlElementCollection *m_elements_collection = nullptr;
 		bool m_freeze_new_elements = false;
@@ -366,7 +378,9 @@ class QETProject : public QObject
 		QTimer m_save_backup_timer,
 			   m_autosave_timer;
 		QFuture<bool> m_backup_future;
-		KAutoSaveFile m_backup_file;
+			/// Crash-recovery snapshots, written in turn by writeBackup()
+		std::array<KAutoSaveFile, BackupGenerations> m_backup_files;
+		int m_next_backup_slot = 0;
 		QUuid m_uuid = QUuid::createUuid();
 		QHash<QString, int> m_derived_uuid_keys;
 		QSet<QUuid> m_saved_item_uuids;	//symbol and wire uuids the file carries, see derivedItemUuid()

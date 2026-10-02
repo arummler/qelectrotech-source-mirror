@@ -104,6 +104,13 @@ add_test(NAME tst_textgrid COMMAND tst_textgrid)
 target_include_directories(tst_textgrid PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_textgrid PRIVATE Qt::Test)
 
+# elementviewgrid.h is header-only: the symbol editor's snap step at each
+# zoom (bugtracker #112), tested without an editor window.
+add_executable(tst_elementviewgrid tst_elementviewgrid.cpp)
+add_test(NAME tst_elementviewgrid COMMAND tst_elementviewgrid)
+target_include_directories(tst_elementviewgrid PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_elementviewgrid PRIVATE Qt::Test)
+
 # alignment.h is header-only too (it builds on textgrid.h): the geometry
 # behind the align commands, tested without a scene.
 add_executable(tst_alignment tst_alignment.cpp)
@@ -111,12 +118,35 @@ add_test(NAME tst_alignment COMMAND tst_alignment)
 target_include_directories(tst_alignment PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_alignment PRIVATE Qt::Test)
 
+# terminalnamecheck.h is header-only: the terminal name rule applied by the
+# element editor on save and by --check-elements.
+add_executable(tst_terminalnamecheck tst_terminalnamecheck.cpp)
+add_test(NAME tst_terminalnamecheck COMMAND tst_terminalnamecheck)
+target_include_directories(tst_terminalnamecheck PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_terminalnamecheck PRIVATE Qt::Test)
+
+# configprofile.h is header-only: which settings a saved configuration
+# profile carries, and how loading one replaces the live settings.
+add_executable(tst_configprofile tst_configprofile.cpp)
+add_test(NAME tst_configprofile COMMAND tst_configprofile)
+target_include_directories(tst_configprofile PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_configprofile PRIVATE Qt::Test Qt::Gui)
+
 # itemgroups.cpp keeps group membership and the selection rule apart from
 # Diagram, so it is tested here on a plain scene of rectangles.
 add_executable(tst_itemgroups tst_itemgroups.cpp ${QET_DIR}/sources/itemgroups.cpp)
 add_test(NAME tst_itemgroups COMMAND tst_itemgroups)
 target_include_directories(tst_itemgroups PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_itemgroups PRIVATE Qt::Test Qt::Widgets Qt::Xml)
+
+# textanchor.h is header-only: the point of a text chosen by its alignment,
+# shown as Position X/Y in the text properties (#1155).
+add_executable(tst_textanchor tst_textanchor.cpp)
+add_test(NAME tst_textanchor COMMAND tst_textanchor)
+set_tests_properties(tst_textanchor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+target_include_directories(tst_textanchor PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_textanchor PRIVATE Qt::Test Qt::Widgets)
+
 # legacyelementtypes.h is header-only: the rewrite of element type names in
 # nomenclature queries saved before June 2022.
 add_executable(tst_legacyelementtypes tst_legacyelementtypes.cpp)
@@ -188,6 +218,18 @@ add_test(NAME tst_commandsearch COMMAND tst_commandsearch)
 set_tests_properties(tst_commandsearch PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 target_include_directories(tst_commandsearch PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_commandsearch PRIVATE Qt::Test Qt::Widgets)
+
+# scriptheader.h is header-only: the // ==QETScript== block that turns a
+# stored script into a button; and ShortcutManager::unregisterAction(), which
+# takes a deleted script's command out of the lists again.
+add_executable(
+  tst_scriptheader
+  tst_scriptheader.cpp
+  ${QET_DIR}/sources/shortcutmanager.cpp)
+add_test(NAME tst_scriptheader COMMAND tst_scriptheader)
+set_tests_properties(tst_scriptheader PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+target_include_directories(tst_scriptheader PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_scriptheader PRIVATE Qt::Test Qt::Widgets)
 
 # QETSql::execReadOnly() -- read-only enforcement for every project-database
 # query, including the ones a .qet file carries. Compiles sqlreadonly.cpp
@@ -339,6 +381,34 @@ target_link_libraries(tst_conductorselfretrace PRIVATE Qt::Test)
 target_compile_definitions(tst_conductorselfretrace PRIVATE
   "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
 
+# The wiring list export (--export-cables) keeps every wire drawn to a folio
+# report when a report has several, joins only one-to-one report pairs, and
+# prints the folio number rather than its template. fixtures/wiring_list_arrows.qet
+# has one of each report pair; the examples check the page column.
+add_executable(
+  tst_wiringlistexport
+  tst_wiringlistexport.cpp)
+add_test(NAME tst_wiringlistexport COMMAND tst_wiringlistexport)
+add_dependencies(tst_wiringlistexport qelectrotech)
+target_link_libraries(tst_wiringlistexport PRIVATE Qt::Test)
+target_compile_definitions(tst_wiringlistexport PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
+  "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
+
+# Hops where wires cross (issue #436): the geometry in wirehops.cpp, and
+# through the real binary, that --resave keeps the project setting and
+# adds nothing to a project without it.
+add_executable(
+  tst_wirehops
+  tst_wirehops.cpp
+  ${QET_DIR}/sources/wirehops.cpp)
+add_test(NAME tst_wirehops COMMAND tst_wirehops)
+add_dependencies(tst_wirehops qelectrotech)
+target_include_directories(tst_wirehops PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_wirehops PRIVATE Qt::Test Qt::Gui)
+target_compile_definitions(tst_wirehops PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
 # qet.conductorUuids() / qet.conductorEnds(): a script lists a folio's
 # conductors by uuid and finds each one's two ends. Runs a script through
 # the real binary's --run on fixtures/qet_bug_repro_resaved.qet, so only
@@ -353,6 +423,18 @@ if(QET_HAS_SCRIPTING)
   target_link_libraries(tst_scriptconductoruuid PRIVATE Qt::Test)
   target_compile_definitions(tst_scriptconductoruuid PRIVATE
     "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
+  # QET_SETTINGS_DIR moves the settings into an INI file there (#1178): a
+  # script places a symbol only the folder's settings file can resolve.
+  add_executable(
+    tst_settingsdir
+    tst_settingsdir.cpp)
+  add_test(NAME tst_settingsdir COMMAND tst_settingsdir)
+  add_dependencies(tst_settingsdir qelectrotech)
+  target_link_libraries(tst_settingsdir PRIVATE Qt::Test)
+  target_compile_definitions(tst_settingsdir PRIVATE
+    "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
+    "QET_ELEMENTS_DIR=\"${QET_DIR}/elements\"")
 
   # The project database filled from the file as it is read holds exactly
   # what it holds filled from the built folios (QET_DATABASE_FROM_FOLIOS=1),
@@ -389,6 +471,18 @@ if(QET_HAS_SCRIPTING)
   add_dependencies(tst_scriptterminaluuid qelectrotech)
   target_link_libraries(tst_scriptterminaluuid PRIVATE Qt::Test Qt::Xml)
   target_compile_definitions(tst_scriptterminaluuid PRIVATE
+    "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
+    "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
+
+  # qet.currentFolio() through --run: the first folio, or -1 with none; and
+  # --run keeps one undo step per call (only an editor run is grouped).
+  add_executable(
+    tst_scriptcurrentfolio
+    tst_scriptcurrentfolio.cpp)
+  add_test(NAME tst_scriptcurrentfolio COMMAND tst_scriptcurrentfolio)
+  add_dependencies(tst_scriptcurrentfolio qelectrotech)
+  target_link_libraries(tst_scriptcurrentfolio PRIVATE Qt::Test)
+  target_compile_definitions(tst_scriptcurrentfolio PRIVATE
     "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
     "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
 endif()
@@ -446,6 +540,34 @@ target_link_libraries(tst_terminaluuids PRIVATE Qt::Test Qt::Xml)
 target_compile_definitions(tst_terminaluuids PRIVATE
   "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
   "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
+
+# ConductorProperties::applyChanges() -- the Selection properties panel
+# writes only the fields the user edited.
+add_executable(
+  tst_conductorapplychanges
+  tst_conductorapplychanges.cpp
+  ${QET_DIR}/sources/conductorproperties.cpp
+  ${QET_DIR}/sources/qet.cpp
+  ${QET_DIR}/sources/qeticons.cpp
+  ${QET_DIR}/sources/shortcutmanager.cpp)
+add_test(NAME tst_conductorapplychanges COMMAND tst_conductorapplychanges)
+target_include_directories(tst_conductorapplychanges PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_conductorapplychanges PRIVATE Qt::Test Qt::Widgets Qt::Xml pugixml::pugixml)
+
+# ConductorMultiEdit -- editing several wires at once in the Selection
+# properties panel: order, which wires an edit reaches, one undo step for
+# all of them, and fields shown blank because the wires disagree.
+add_executable(
+  tst_conductormultiedit
+  tst_conductormultiedit.cpp
+  ${QET_DIR}/sources/conductorproperties.cpp
+  ${QET_DIR}/sources/QPropertyUndoCommand/qpropertyundocommand.cpp
+  ${QET_DIR}/sources/qet.cpp
+  ${QET_DIR}/sources/qeticons.cpp
+  ${QET_DIR}/sources/shortcutmanager.cpp)
+add_test(NAME tst_conductormultiedit COMMAND tst_conductormultiedit)
+target_include_directories(tst_conductormultiedit PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_conductormultiedit PRIVATE Qt::Test Qt::Widgets Qt::Xml pugixml::pugixml)
 
 # DiagramContext::fromXml() -- the two readers (QDom for projects, pugixml
 # for element definitions in the collection) give the same values: stray

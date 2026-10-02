@@ -61,6 +61,8 @@ class QETDiagramEditor : public QETMainWindow
 	Q_OBJECT
 
         friend class TerminalStripEditorWindow;
+        friend class LiveServer;
+        friend class MacroRecorder;
 	
 	public:
 		QETDiagramEditor(
@@ -75,6 +77,7 @@ class QETDiagramEditor : public QETMainWindow
 		ProjectView         *viewForFile       (const QString &) const;
 		ProjectView *currentProjectView() const;
 		QETProject *currentProject() const;
+		void templateSaved(const ElementsLocation &location);
 		bool drawGrid() const;
 		void openBackupFiles (QList<KAutoSaveFile *> backup_files);
 
@@ -153,6 +156,13 @@ class QETDiagramEditor : public QETMainWindow
 		void slot_reloadElementDrawings();
 #ifdef QET_HAS_SCRIPTING
 		void slot_runScript();
+		void rebuildScriptActions();
+		void updateScriptActions();
+		bool ensureScriptingEnabled(const QString &title);
+		void runStoredScript(const QString &path, const QString &name);
+		void setUpLiveIndicator();
+		void setUpMacroRecorder();
+		void macroRecorded(const QJsonObject &recording);
 #endif
 		void editDiagramProperties(DiagramView *);
 		void editDiagramProperties(Diagram *);
@@ -219,6 +229,7 @@ class QETDiagramEditor : public QETMainWindow
 		*undo,				///< Cancel the latest action
 		*redo,				///< Redo the latest cancelled operation
 		*m_paste,			///< Paste clipboard content on the current diagram
+		*m_paste_origin,		///< Same, at the copied position, cursor warped to the origin (Ctrl+Shift+V)
 		*m_duplicate,			///< Copy selection, offset by the configured step (#991)
 		*m_configure_duplicate,		///< Reopen the duplicate offset/direction dialog (#991)
 		*m_auto_conductor,		///< Enable/Disable the use of auto conductor
@@ -243,6 +254,9 @@ class QETDiagramEditor : public QETMainWindow
 		*m_reload_element_drawings,    ///< Action to redraw every placed element from its current definition
 #ifdef QET_HAS_SCRIPTING
 		*m_run_script,                 ///< Action to run a JavaScript macro against the current project
+		*m_open_scripts_folder,        ///< Action to open the folder stored scripts are read from
+		*m_manage_scripts,             ///< Action to open the script manager
+		*m_record_macro,               ///< Action to start / stop recording a macro
 #endif
 		*m_export_project_db,		///Export to file the internal database of the current project
 		*m_tile_window,			///< Show MDI subwindows as tile
@@ -308,7 +322,14 @@ class QETDiagramEditor : public QETMainWindow
 		*view_tool_bar       = nullptr,
 		*diagram_tool_bar    = nullptr,
 		*m_add_item_tool_bar = nullptr,
-		*m_depth_tool_bar    = nullptr;
+		*m_depth_tool_bar    = nullptr,
+		*m_scripts_tool_bar  = nullptr;	///< One button per stored script
+#ifdef QET_HAS_SCRIPTING
+		QMenu *m_scripts_menu = nullptr;
+		QList<QAction *> m_script_actions;	///< One per stored script, rebuilt when the folder changes
+		bool m_had_scripts = false;
+		QPointer<QDialog> m_script_manager;
+#endif
 		
 		QUndoGroup undo_group;
 		AutoNumberingDockWidget *m_autonumbering_dock;

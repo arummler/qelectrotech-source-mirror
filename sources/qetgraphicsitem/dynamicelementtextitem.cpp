@@ -63,9 +63,17 @@ DynamicElementTextItem::DynamicElementTextItem(Element *parent_element) :
 	
 		//Option when text is displayed in multiple line
 	QTextOption option = document()->defaultTextOption();
-	option.setAlignment(Qt::AlignHCenter);
+	option.setAlignment(alignment() & Qt::AlignHorizontal_Mask);
 	option.setWrapMode(QTextOption::WordWrap);
 	document()->setDefaultTextOption(option);
+
+		//Lines of a multi-line text follow the horizontal alignment
+	connect(this, &DiagramTextItem::alignmentChanged, [this](Qt::Alignment alignment)
+	{
+		QTextOption option = document()->defaultTextOption();
+		option.setAlignment(alignment & Qt::AlignHorizontal_Mask);
+		document()->setDefaultTextOption(option);
+	});
 }
 
 DynamicElementTextItem::~DynamicElementTextItem()
@@ -1339,8 +1347,13 @@ void DynamicElementTextItem::updateLabel()
 		}
 		else if (m_text_from == CompositeText) {
 			// Use actualLabel() to ensure %{label} reflects the current
-			// resolved label (e.g. after a folio/page-number change)
-			dc.addValue(QStringLiteral("label"), element->actualLabel());
+			// resolved label (e.g. after a folio/page-number change).
+			// A contact not linked to a coil has no element to read from
+			// (bugtracker #345): %{label} then shows empty, as it did
+			// before actualLabel() was used here.
+			if (element) {
+				dc.addValue(QStringLiteral("label"), element->actualLabel());
+			}
 			setPlainText(autonum::AssignVariables::replaceVariable(m_composite_text, dc));
 		}
 	}

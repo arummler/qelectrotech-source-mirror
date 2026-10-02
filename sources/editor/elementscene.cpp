@@ -18,6 +18,7 @@
 #include "elementscene.h"
 
 #include "../ElementsCollection/terminaluuids.h"
+#include "../borderproperties.h"
 #include "../NameList/ui/namelistdialog.h"
 #include "../NameList/ui/namelistwidget.h"
 #include "../QPropertyUndoCommand/qpropertyundocommand.h"
@@ -72,6 +73,49 @@ ElementScene::ElementScene(QETElementEditor *editor, QObject *parent) :
 	m_decorator_lock = new QMutex();
 	connect(&m_undo_stack, &QUndoStack::indexChanged, this, &ElementScene::managePrimitivesGroups);
 	connect(this, &ElementScene::selectionChanged, this, &ElementScene::managePrimitivesGroups);
+
+	QSettings settings;
+	m_background_frame_visible = settings.value(
+			QStringLiteral("elementeditor/background_frame_visible"), false).toBool();
+	BorderProperties bp = BorderProperties::defaultProperties();
+	m_background_frame_size = QSizeF(
+			settings.value(QStringLiteral("elementeditor/background_frame_width"),
+						   bp.columns_count * bp.columns_width).toReal(),
+			settings.value(QStringLiteral("elementeditor/background_frame_height"),
+						   bp.rows_count * bp.rows_height).toReal());
+}
+
+/**
+	@brief ElementScene::setBackgroundFrameVisible
+	Toggle the visual-only background frame used to proportion this
+	element's drawing against a representative folio surface. Like the
+	hotspot indicator, this frame is never written to the saved .elmt file.
+	@param visible
+*/
+void ElementScene::setBackgroundFrameVisible(bool visible)
+{
+	if (m_background_frame_visible == visible) {
+		return;
+	}
+	m_background_frame_visible = visible;
+	QSettings().setValue(QStringLiteral("elementeditor/background_frame_visible"), visible);
+	update();
+}
+
+/**
+	@brief ElementScene::setBackgroundFrameSize
+	@param size the new size (in scene/grid units) of the background frame
+*/
+void ElementScene::setBackgroundFrameSize(const QSizeF &size)
+{
+	if (m_background_frame_size == size) {
+		return;
+	}
+	m_background_frame_size = size;
+	QSettings settings;
+	settings.setValue(QStringLiteral("elementeditor/background_frame_width"), size.width());
+	settings.setValue(QStringLiteral("elementeditor/background_frame_height"), size.height());
+	update();
 }
 
 /**
@@ -104,6 +148,9 @@ ElementScene::~ElementScene()
 	disconnect(&m_undo_stack, &QUndoStack::indexChanged, this, &ElementScene::managePrimitivesGroups);
 	delete m_decorator_lock;
 
+		//Deleting the event interface resets the behavior; the editor
+		//is already being destroyed, so it must not hear about it.
+	blockSignals(true);
 	if (m_event_interface)
 		delete m_event_interface;
 
@@ -373,7 +420,10 @@ void ElementScene::clearEventInterface()
 */
 void ElementScene::setBehavior(ElementScene::Behavior b)
 {
+	if (b == m_behavior)
+		return;
 	m_behavior = b;
+	emit behaviorChanged();
 }
 
 ElementScene::Behavior ElementScene::behavior() const
@@ -1221,6 +1271,14 @@ ElementContent ElementScene::loadContent(const QDomDocument &xml_document)
 					continue;
 				CustomElementPart *cep = nullptr;
 				PartDynamicTextField *pdtf = nullptr;
+
+					//A shape with a "nan" or "inf" coordinate is not drawn
+					//on the folio either; loading it would only break the view
+				if (QET::hasNonFiniteGeometry(qde)) {
+					qWarning() << "Element editor: skipped a" << qde.tagName()
+							   << "with a non-finite coordinate";
+					continue;
+				}
 
 				if      (qde.tagName() == "line")       cep = new PartLine      (m_element_editor);
 				else if (qde.tagName() == "rect")       cep = new PartRectangle (m_element_editor);
