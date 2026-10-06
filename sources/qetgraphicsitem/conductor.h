@@ -129,6 +129,7 @@ class Conductor : public QGraphicsObject
 		void setProfiles(const ConductorProfilesGroup &);
 		ConductorProfilesGroup profiles() const;
 		void calculateTextItemPosition();
+		void updateTextVisibility();
 		virtual Highlight highlight() const;
 		virtual void setHighlighted(Highlight);
 		QSet<Conductor *> relatedPotentialConductors(
@@ -236,6 +237,7 @@ class Conductor : public QGraphicsObject
 		uint segmentsCount(QET::ConductorSegmentType = QET::Both) const;
 		QList<QPointF> segmentsToPoints() const;
 		QList<ConductorBend> bends() const;
+		bool bendMakesJunction(const Conductor *, const QPointF &, Qt::Corner) const;
 
 		void pointsToSegments(const QList<QPointF>&);
 		Qt::Corner currentPathType() const;

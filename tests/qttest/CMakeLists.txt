@@ -1,4 +1,4 @@
-# Copyright 2006 The QElectroTech Team
+# Copyright 2006-2026 The QElectroTech Team
 # This file is part of QElectroTech.
 #
 # QElectroTech is free software: you can redistribute it and/or modify
@@ -104,6 +104,14 @@ add_test(NAME tst_textgrid COMMAND tst_textgrid)
 target_include_directories(tst_textgrid PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_textgrid PRIVATE Qt::Test)
 
+# textlines.h is header-only: the lines of a text as they are laid out,
+# for the exports that write a text line by line.
+add_executable(tst_textlines tst_textlines.cpp)
+add_test(NAME tst_textlines COMMAND tst_textlines)
+set_tests_properties(tst_textlines PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+target_include_directories(tst_textlines PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_textlines PRIVATE Qt::Test Qt::Gui)
+
 # elementviewgrid.h is header-only: the symbol editor's snap step at each
 # zoom (bugtracker #112), tested without an editor window.
 add_executable(tst_elementviewgrid tst_elementviewgrid.cpp)
@@ -139,6 +147,14 @@ add_test(NAME tst_itemgroups COMMAND tst_itemgroups)
 target_include_directories(tst_itemgroups PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_itemgroups PRIVATE Qt::Test Qt::Widgets Qt::Xml)
 
+# shownkinds.cpp keeps View > Show (bugtracker #301) apart from the item
+# classes, so it is tested here on a plain scene of rectangles.
+add_executable(tst_shownkinds tst_shownkinds.cpp ${QET_DIR}/sources/shownkinds.cpp)
+add_test(NAME tst_shownkinds COMMAND tst_shownkinds)
+set_tests_properties(tst_shownkinds PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+target_include_directories(tst_shownkinds PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_shownkinds PRIVATE Qt::Test Qt::Widgets)
+
 # textanchor.h is header-only: the point of a text chosen by its alignment,
 # shown as Position X/Y in the text properties (#1155).
 add_executable(tst_textanchor tst_textanchor.cpp)
@@ -146,6 +162,18 @@ add_test(NAME tst_textanchor COMMAND tst_textanchor)
 set_tests_properties(tst_textanchor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 target_include_directories(tst_textanchor PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_textanchor PRIVATE Qt::Test Qt::Widgets)
+
+# TextResizeHandles: the corner handles that change the width of a text box,
+# on a plain QGraphicsTextItem with the "textWidth" property QET texts have.
+add_executable(
+  tst_textresizehandles
+  tst_textresizehandles.cpp
+  ${QET_DIR}/sources/QetGraphicsItemModeler/qetgraphicshandleritem.cpp
+  ${QET_DIR}/sources/QetGraphicsItemModeler/textresizehandles.cpp)
+add_test(NAME tst_textresizehandles COMMAND tst_textresizehandles)
+set_tests_properties(tst_textresizehandles PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+target_include_directories(tst_textresizehandles PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_textresizehandles PRIVATE Qt::Test Qt::Widgets)
 
 # legacyelementtypes.h is header-only: the rewrite of element type names in
 # nomenclature queries saved before June 2022.
@@ -218,6 +246,23 @@ add_test(NAME tst_commandsearch COMMAND tst_commandsearch)
 set_tests_properties(tst_commandsearch PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 target_include_directories(tst_commandsearch PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_commandsearch PRIVATE Qt::Test Qt::Widgets)
+
+# ShortcutsConfigPage: icon and menu columns, category filter, finding a
+# command by pressing its key, and the copied list.
+add_executable(
+  tst_shortcutspage
+  tst_shortcutspage.cpp
+  ${QET_DIR}/sources/ui/configpage/shortcutsconfigpage.cpp
+  ${QET_DIR}/sources/ui/configpage/shortcutsconfigpage.h
+  ${QET_DIR}/sources/ui/configpage/configpage.h
+  ${QET_DIR}/sources/shortcutmanager.cpp
+  ${QET_DIR}/sources/qeticons.cpp
+  ${QET_DIR}/sources/qetpalette.cpp
+  ${QET_DIR}/sources/qetstyle.cpp)
+add_test(NAME tst_shortcutspage COMMAND tst_shortcutspage)
+set_tests_properties(tst_shortcutspage PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+target_include_directories(tst_shortcutspage PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_shortcutspage PRIVATE Qt::Test Qt::Widgets Qt::Svg)
 
 # scriptheader.h is header-only: the // ==QETScript== block that turns a
 # stored script into a button; and ShortcutManager::unregisterAction(), which
@@ -381,6 +426,18 @@ target_link_libraries(tst_conductorselfretrace PRIVATE Qt::Test)
 target_compile_definitions(tst_conductorselfretrace PRIVATE
   "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
 
+# A free text with a width keeps it when the project is saved again (the
+# attribute is written only when set) and is drawn wrapped to it.
+add_executable(
+  tst_freetextwidth
+  tst_freetextwidth.cpp)
+add_test(NAME tst_freetextwidth COMMAND tst_freetextwidth)
+set_tests_properties(tst_freetextwidth PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+add_dependencies(tst_freetextwidth qelectrotech)
+target_link_libraries(tst_freetextwidth PRIVATE Qt::Test Qt::Gui Qt::Xml)
+target_compile_definitions(tst_freetextwidth PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
 # The wiring list export (--export-cables) keeps every wire drawn to a folio
 # report when a report has several, joins only one-to-one report pairs, and
 # prints the folio number rather than its template. fixtures/wiring_list_arrows.qet
@@ -392,6 +449,41 @@ add_test(NAME tst_wiringlistexport COMMAND tst_wiringlistexport)
 add_dependencies(tst_wiringlistexport qelectrotech)
 target_link_libraries(tst_wiringlistexport PRIVATE Qt::Test)
 target_compile_definitions(tst_wiringlistexport PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
+  "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
+
+# --export-dxf writes a wrapped symbol text line by line, as it is drawn.
+add_executable(
+  tst_dxfwrappedtext
+  tst_dxfwrappedtext.cpp)
+add_test(NAME tst_dxfwrappedtext COMMAND tst_dxfwrappedtext)
+add_dependencies(tst_dxfwrappedtext qelectrotech)
+target_link_libraries(tst_dxfwrappedtext PRIVATE Qt::Test)
+target_compile_definitions(tst_dxfwrappedtext PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
+# --export-pdf puts an A3 folio on an A3 page whichever way it is turned:
+# QPageSize matches standard sheets upright only, so a wide folio is matched
+# upright and turned. fixtures/pdf_page_a3.qet has one folio each way.
+add_executable(
+  tst_pdfpagesize
+  tst_pdfpagesize.cpp)
+add_test(NAME tst_pdfpagesize COMMAND tst_pdfpagesize)
+add_dependencies(tst_pdfpagesize qelectrotech)
+target_link_libraries(tst_pdfpagesize PRIVATE Qt::Test Qt::Gui)
+target_compile_definitions(tst_pdfpagesize PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
+# --export-pdf writes the cross-reference links in the same order in every
+# run, rather than in Element pointer order. Exports examples/industrial.qet
+# several times, in separate processes.
+add_executable(
+  tst_pdflinkorder
+  tst_pdflinkorder.cpp)
+add_test(NAME tst_pdflinkorder COMMAND tst_pdflinkorder)
+add_dependencies(tst_pdflinkorder qelectrotech)
+target_link_libraries(tst_pdflinkorder PRIVATE Qt::Test)
+target_compile_definitions(tst_pdflinkorder PRIVATE
   "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
   "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
 
@@ -408,6 +500,31 @@ target_link_libraries(tst_potentialtextcarrier PRIVATE Qt::Test)
 target_compile_definitions(tst_potentialtextcarrier PRIVATE
   "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
 
+# Junction dots: a wire's corner that lies on another wire of the same
+# potential gets a dot, even when the two share no terminal (issue #1280).
+# Exports fixtures/junction_dot_shared_potential.qet through the real binary.
+add_executable(
+  tst_junctiondots
+  tst_junctiondots.cpp)
+add_test(NAME tst_junctiondots COMMAND tst_junctiondots)
+add_dependencies(tst_junctiondots qelectrotech)
+target_link_libraries(tst_junctiondots PRIVATE Qt::Test)
+target_compile_definitions(tst_junctiondots PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
+# With SOURCE_DATE_EPOCH set, --export-pdf writes the same bytes for the
+# same project in every run. Exports examples/741.qet several times, in
+# separate processes.
+add_executable(
+  tst_pdfreproducible
+  tst_pdfreproducible.cpp)
+add_test(NAME tst_pdfreproducible COMMAND tst_pdfreproducible)
+add_dependencies(tst_pdfreproducible qelectrotech)
+target_link_libraries(tst_pdfreproducible PRIVATE Qt::Test)
+target_compile_definitions(tst_pdfreproducible PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
+  "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
+
 # Hops where wires cross (issue #436): the geometry in wirehops.cpp, and
 # through the real binary, that --resave keeps the project setting and
 # adds nothing to a project without it.
@@ -420,6 +537,21 @@ add_dependencies(tst_wirehops qelectrotech)
 target_include_directories(tst_wirehops PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_wirehops PRIVATE Qt::Test Qt::Gui)
 target_compile_definitions(tst_wirehops PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
+# Wires per terminal (discussion #1158): the rules in wiringrules.cpp, and
+# through the real binary, that --resave keeps the project setting, adds
+# none to a project without it, and that a wire past the limit is refused
+# unless the master switch is off.
+add_executable(
+  tst_wiringrules
+  tst_wiringrules.cpp
+  ${QET_DIR}/sources/wiringrules.cpp)
+add_test(NAME tst_wiringrules COMMAND tst_wiringrules)
+add_dependencies(tst_wiringrules qelectrotech)
+target_include_directories(tst_wiringrules PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_wiringrules PRIVATE Qt::Test Qt::Xml)
+target_compile_definitions(tst_wiringrules PRIVATE
   "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
 
 # The routing behind qet.routeConductor(): conductorrouter.cpp needs only
@@ -445,6 +577,28 @@ if(QET_HAS_SCRIPTING)
   add_dependencies(tst_scriptconductoruuid qelectrotech)
   target_link_libraries(tst_scriptconductoruuid PRIVATE Qt::Test)
   target_compile_definitions(tst_scriptconductoruuid PRIVATE
+    "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
+  # qet.terminalPosition() and qet.conductorPath(), checked against each
+  # other on a fixture's conductors.
+  add_executable(
+    tst_scriptlayoutreads
+    tst_scriptlayoutreads.cpp)
+  add_test(NAME tst_scriptlayoutreads COMMAND tst_scriptlayoutreads)
+  add_dependencies(tst_scriptlayoutreads qelectrotech)
+  target_link_libraries(tst_scriptlayoutreads PRIVATE Qt::Test)
+  target_compile_definitions(tst_scriptlayoutreads PRIVATE
+    "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
+  # The project database keeps the width of a free text (independent_text),
+  # read with qet.query() on fixtures/free_text_width.qet.
+  add_executable(
+    tst_scriptfreetextwidth
+    tst_scriptfreetextwidth.cpp)
+  add_test(NAME tst_scriptfreetextwidth COMMAND tst_scriptfreetextwidth)
+  add_dependencies(tst_scriptfreetextwidth qelectrotech)
+  target_link_libraries(tst_scriptfreetextwidth PRIVATE Qt::Test)
+  target_compile_definitions(tst_scriptfreetextwidth PRIVATE
     "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
 
   # QET_SETTINGS_DIR moves the settings into an INI file there (#1178): a
@@ -509,6 +663,18 @@ if(QET_HAS_SCRIPTING)
     "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
     "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
 
+  # Undoing a crop of a picture restores its crop rectangle too, so a
+  # project saved after the undo does not record the undone crop.
+  add_executable(
+    tst_imagecropundo
+    tst_imagecropundo.cpp)
+  add_test(NAME tst_imagecropundo COMMAND tst_imagecropundo)
+  add_dependencies(tst_imagecropundo qelectrotech)
+  target_link_libraries(tst_imagecropundo PRIVATE Qt::Test Qt::Gui)
+  target_compile_definitions(tst_imagecropundo PRIVATE
+    "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
+    "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
+
   # The same symbol placed twice in a project whose collection does not
   # start with its "import" category (examples/lmdg.qet).
   add_executable(
@@ -560,6 +726,21 @@ target_link_libraries(tst_derivedwireuuid PRIVATE Qt::Test Qt::Xml)
 target_compile_definitions(tst_derivedwireuuid PRIVATE
   "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
   "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
+
+# Element numbering schemes carry an id and elements follow them by it:
+# a legacy file gets stable ids on --resave; through --run, rename, edit,
+# refused removal and undo/redo keep the elements following the scheme.
+if(QET_HAS_SCRIPTING)
+  add_executable(
+    tst_elementautonumids
+    tst_elementautonumids.cpp)
+  add_test(NAME tst_elementautonumids COMMAND tst_elementautonumids)
+  add_dependencies(tst_elementautonumids qelectrotech)
+  target_link_libraries(tst_elementautonumids PRIVATE Qt::Test Qt::Xml)
+  target_compile_definitions(tst_elementautonumids PRIVATE
+    "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
+    "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
+endif()
 
 # Saving a project that was just saved changes nothing: runs the real
 # binary's --resave twice on every project in examples/, and on one whose
@@ -630,3 +811,27 @@ add_executable(
 add_test(NAME tst_diagramcontext COMMAND tst_diagramcontext)
 target_include_directories(tst_diagramcontext PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_diagramcontext PRIVATE Qt::Test Qt::Widgets Qt::Xml pugixml::pugixml)
+
+# XRefProperties: an empty or unknown cross-reference position, as older
+# versions saved it, reads as the default instead of drawing the
+# cross-reference over the element's label (issue #1238).
+add_executable(
+  tst_xrefpos
+  tst_xrefpos.cpp
+  ${QET_DIR}/sources/properties/xrefproperties.cpp
+  ${QET_DIR}/sources/properties/propertiesinterface.cpp)
+add_test(NAME tst_xrefpos COMMAND tst_xrefpos)
+target_include_directories(tst_xrefpos PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_xrefpos PRIVATE Qt::Test Qt::Widgets Qt::Xml pugixml::pugixml)
+
+# Qt 6.4.2 writes the attributes of an element in an order that changes from
+# one process to the next, so a project saved twice by two runs of the binary
+# differs in bytes only (seen on projects without any numbering, too). A fixed
+# hash seed makes the order stable; it changes nothing for a newer Qt.
+if(Qt6_VERSION VERSION_LESS 6.5.0)
+  foreach(qet_test tst_resaveunchanged tst_elementautonumids)
+    if(TEST ${qet_test})
+      set_tests_properties(${qet_test} PROPERTIES ENVIRONMENT "QT_HASH_SEED=0")
+    endif()
+  endforeach()
+endif()

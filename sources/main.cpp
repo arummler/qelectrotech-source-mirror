@@ -34,6 +34,9 @@
 #include <QApplication>
 #include <QDomImplementation>
 #include <QFont>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 2, 0)
+#include <QHashSeed>
+#endif
 
 #include <QSettings>
 #include <QStyleFactory>
@@ -93,11 +96,43 @@ void qetLogMessageHandler(QtMsgType type,
 	\~French paramètres
 	\~ @return exit code
 */
+/**
+	@brief headlessArguments
+	For the headless export and --run, which return before QETApp parses
+	the command line: apply the folder options (--common-elements-dir= and
+	the others QETArguments knows) and return the arguments without them,
+	so they are not read as the project or output path (issue #1178).
+*/
+static QStringList headlessArguments(const QStringList &args)
+{
+	QETApp::applyDirectoryArguments(QETArguments(args.mid(1)));
+	static const QStringList folder_options {
+		QStringLiteral("--common-elements-dir="), QStringLiteral("--common-tbt-dir="),
+		QStringLiteral("--config-dir="), QStringLiteral("--data-dir="),
+		QStringLiteral("--lang-dir=")};
+	QStringList kept;
+	for (const QString &arg : args) {
+		bool folder = false;
+		for (const QString &option : folder_options)
+			folder = folder || arg.startsWith(option);
+		if (!folder) kept << arg;
+	}
+	return kept;
+}
+
 int main(int argc, char **argv)
 {
 	// before creating Application:
-	// export environment-variable "QT_HASH_SEED" with value "0" to
-	// disable radomisation for hashes in order to obtain "clean" XML-diffs:
+	// disable randomisation for hashes in order to obtain "clean" XML-diffs,
+	// and the same PDF for the same project (the PDF engine writes its fonts
+	// in QHash order). Setting QT_HASH_SEED alone came too late: Qt reads it
+	// once, when the first hash is made, and that happens before main().
+	// The variable is still set for the processes QElectroTech starts.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 2, 0)
+	QHashSeed::setDeterministicGlobalSeed();
+#else
+	qSetGlobalQHashSeed(0);
+#endif
 	qputenv("QT_HASH_SEED", "0");
 	//Some setup, notably to use with QSetting.
 	QCoreApplication::setOrganizationName("QElectroTech");
@@ -112,6 +147,12 @@ int main(int argc, char **argv)
 	// system (issue #1178). Set before anything reads a setting.
 	const QString settings_dir = qEnvironmentVariable("QET_SETTINGS_DIR");
 	if (!settings_dir.isEmpty()) {
+#ifdef Q_OS_DARWIN
+		// On macOS, Qt names that subfolder after the organization domain
+		// when there is one (<folder>/qelectrotech.org/) (issue #1246).
+		// Nothing in QElectroTech reads the domain.
+		QCoreApplication::setOrganizationDomain(QString());
+#endif
 		QSettings::setDefaultFormat(QSettings::IniFormat);
 		QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings_dir);
 		QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, settings_dir);
@@ -159,7 +200,7 @@ int main(int argc, char **argv)
 			// QETProject::readProjectXml(), and with nobody able to dismiss it
 			// QDialog::exec() would spin its event loop forever.
 			QET::QetMessageBox::setNonInteractive(true);
-			return CLIExport::run(export_app.arguments());
+			return CLIExport::run(headlessArguments(export_app.arguments()));
 		}
 #ifdef QET_HAS_SCRIPTING
 		// Headless scripting: --run <script.js> <project.qet> (bugtracker
@@ -169,7 +210,7 @@ int main(int argc, char **argv)
 			QApplication script_app(argc, argv);
 			QETProject::setBackupEnabled(false);
 			QET::QetMessageBox::setNonInteractive(true);
-			return QetScripting::run(script_app.arguments());
+			return QetScripting::run(headlessArguments(script_app.arguments()));
 		}
 #endif
 	}

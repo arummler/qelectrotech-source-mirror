@@ -29,6 +29,7 @@
 #include "titleblock/templatescollection.h"
 #include "titleblockproperties.h"
 #include "wirehops.h"
+#include "wiringrules.h"
 #include "diagram.h"
 #ifdef BUILD_WITHOUT_KF
 #	include "ui/nokde/kautosavefile.h"
@@ -38,11 +39,14 @@
 
 #include <QHash>
 #include <QSet>
+#include <QUuid>
+#include <QVector>
 #include <QFuture>
 
 #include <array>
 
 class Diagram;
+class Element;
 class ElementsLocation;
 class QETResult;
 class TitleBlockTemplate;
@@ -178,12 +182,26 @@ class QETProject : public QObject
 		QString elementCurrentAutoNum() const;
 		void setCurrrentElementAutonum(QString autoNum);
 
+			//Identity of the element numbering schemes. The title is the
+			//name shown to the user and the lookup key of the API; the uuid
+			//is what an element's ELMT_FORMULA_ID refers to, so a scheme can
+			//be renamed or edited without its elements losing track of it.
+		void addElementAutoNum(const QString &key,
+							   const NumerotationContext &context,
+							   const QUuid &id);
+		QUuid elementAutoNumId(const QString &title) const;
+		QString elementAutoNumTitle(const QUuid &id) const;
+		bool renameElementAutoNum(const QString &old_title, const QString &new_title);
+		QString elementAutoNumNameClash(const QString &name,
+										const QString &ignored_title = QString()) const;
+		static QString normalizedAutoNumName(const QString &name);
+		QVector<Element *> elementsUsingElementAutoNum(const QString &title) const;
+
 		/**
 		 * @brief Renumber existing elements by element autonumbering scheme.
 		 *
-		 * Elements do not store the scheme title but they store the corresponding formula.
-		 * This operation matches elements to schemes by comparing the stored formula
-		 * with the formula derived from the scheme's NumerotationContext.
+		 * Elements follow a scheme by its uuid (QETInformation::ELMT_FORMULA_ID),
+		 * see elementsUsingElementAutoNum().
 		 *
 		 * If @p scheme_title is empty, all schemes are renumbered.
 		 * If @p scheme_title is non-empty, only that scheme is renumbered.
@@ -211,6 +229,9 @@ class QETProject : public QObject
 		void setAutoConductor (bool ac);
 		WireHops::Mode wireHops() const;
 		void setWireHops(WireHops::Mode mode);
+		WiringRules::Settings wiringRules() const;
+		WiringRules::Settings projectWiringRules() const;
+		void setWiringRules(const WiringRules::Settings &rules);
 		void setAutoBreakConductor (bool abc);
 		void setAutoElement (bool ae);
 		void autoFolioNumberingNewFolios ();
@@ -308,11 +329,13 @@ class QETProject : public QObject
 		void readTerminalStripXml(const QDomDocument &xml_project);
 		void readUsageXml(QDomDocument &xml_project);
 		void readWireHopsXml(QDomDocument &xml_project);
+		void readWiringRulesXml(QDomDocument &xml_project);
 
 		void writeProjectPropertiesXml(QDomElement &);
 		void writeDefaultPropertiesXml(QDomElement &);
 		void writeUsageXml(QDomElement &);
 		void writeWireHopsXml(QDomElement &);
+		void writeWiringRulesXml(QDomElement &);
 		void addDiagram(Diagram *diagram, int pos = -1);
 		void detachDiagram(Diagram *diagram);
 		void writeBackup();
@@ -368,9 +391,16 @@ class QETProject : public QObject
 		QHash <QString, NumerotationContext> m_folio_autonum;
 			/// Element Auto Numbering
 		QHash <QString, NumerotationContext> m_element_autonum; //Title and NumContext hash
+			/// Title -> uuid of each element numbering scheme
+		QHash <QString, QUuid> m_element_autonum_id;
 		QString m_current_element_autonum;
+			/// True when the loaded file had element numbering schemes
+			/// saved without an id (written before ids existed)
+		bool m_legacy_element_autonums = false;
+		void linkElementsToElementAutoNums();
 		bool m_auto_conductor = true;
 		WireHops::Mode m_wire_hops = WireHops::Mode::None;
+		WiringRules::Settings m_wiring_rules;
 	bool m_auto_break_conductor = false;
 		XmlElementCollection *m_elements_collection = nullptr;
 		bool m_freeze_new_elements = false;

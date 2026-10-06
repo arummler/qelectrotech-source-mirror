@@ -16,6 +16,7 @@
 	along with QElectroTech.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "elementtextitemgroup.h"
+#include "../shownkinds.h"
 #include "../qetproject.h"
 #include "../QPropertyUndoCommand/qpropertyundocommand.h"
 #include "../diagram.h"
@@ -53,6 +54,7 @@ ElementTextItemGroup::ElementTextItemGroup(const QString &name,
 	m_name(name),
 	m_parent_element(parent)
 {
+	ShownKinds::tag(this, ShownKinds::SymbolTexts);
 	setFlags(QGraphicsItem::ItemIsSelectable
 		 | QGraphicsItem::ItemIsMovable);
 	connect(parent,
@@ -362,9 +364,12 @@ void ElementTextItemGroup::setHoldToBottomPage(bool hold)
 			// before updating the position of this group
 			//because the position of this group is related
 			// to the size of the parent element Xref
+			//this is the context of both connections, so they go
+			//when the group is deleted: the project outlives it.
 			m_linked_changed_timer = connect(
 						m_parent_element,
 						&Element::linkedElementChanged,
+						this,
 						[this]()
 			{QTimer::singleShot(200,
 					    this,
@@ -374,6 +379,7 @@ void ElementTextItemGroup::setHoldToBottomPage(bool hold)
 				m_XrefChanged_timer = connect(
 							m_parent_element->diagram()->project(),
 							&QETProject::XRefPropertiesChanged,
+							this,
 							[this]()
 				{QTimer::singleShot(200,
 						    this,
@@ -882,6 +888,7 @@ void ElementTextItemGroup::updateXref()
 					if(!m_slave_Xref_item)
 					{
 						m_slave_Xref_item = new QGraphicsTextItem(xref_label, this);
+						ShownKinds::tag(m_slave_Xref_item, ShownKinds::CrossReferences);
 						m_slave_Xref_item->setFont(QETApp::diagramTextsFont(5));
 						
 						m_update_slave_Xref_connection << connect(master_elmt, &Element::xChanged,                       this, &ElementTextItemGroup::updateXref);

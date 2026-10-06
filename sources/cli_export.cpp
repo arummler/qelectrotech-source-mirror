@@ -43,6 +43,7 @@
 #include <QDirIterator>
 #include <QDomDocument>
 #include <QDate>
+#include <QDateTime>
 #include <QFile>
 #include <QSaveFile>
 #include <QFileInfo>
@@ -59,6 +60,7 @@
 #include <QSqlQuery>
 #include <QSvgGenerator>
 #include <QTextStream>
+#include <QTimeZone>
 #include <QTransform>
 
 namespace {
@@ -147,6 +149,23 @@ void renderDiagram(Diagram *diagram, QPainter &painter, const QRectF &target,
 	diagram->setDrawTerminalNames(was_drawing_terminal_names);
 }
 
+/// The time SOURCE_DATE_EPOCH names, in seconds since 1970 UTC, or an
+/// invalid QDateTime when it is unset. A value that is not a whole number of
+/// seconds is reported and ignored.
+QDateTime sourceDateEpoch()
+{
+	const QByteArray value = qgetenv("SOURCE_DATE_EPOCH");
+	if (value.isEmpty())
+		return {};
+	bool ok = false;
+	const qlonglong seconds = value.toLongLong(&ok);
+	if (!ok || seconds < 0) {
+		err << "SOURCE_DATE_EPOCH '" << value << "' is not a number of seconds; ignored.\n";
+		return {};
+	}
+	return QDateTime::fromSecsSinceEpoch(seconds, QTimeZone::utc());
+}
+
 int exportPdf(QETProject &project, const QString &output,
 			 bool showTerminals = false)
 {
@@ -166,16 +185,37 @@ int exportPdf(QETProject &project, const QString &output,
 	writer.setCreator("QElectroTech");
 	writer.setResolution(96);
 
+	// SOURCE_DATE_EPOCH (reproducible-builds.org) asks for the same file
+	// from the same input: the time it names instead of now, and a document
+	// id from what the PDF shows instead of a random one. Qt has no setter
+	// for the dates, and the content is not known yet, so both are
+	// rewritten once the file is written; Qt writes a fixed id until then.
+	// The id does not come from the project file, whose uuids are new each
+	// time a project is generated again from the same data. Before Qt 6.8
+	// there is no document id to set: it is only written for PDF/A.
+	const QDateTime sourceDate = sourceDateEpoch();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+	if (sourceDate.isValid())
+		writer.setDocumentId(PdfLinks::placeholderDocumentId());
+#endif
+
 	QPainter painter;
 	bool first = true;
 	for (Diagram *diagram : diagrams) {
 		const QRect r = diagramRect(diagram);
 		// Match the page to the diagram (in points: 1px @ 96dpi = 0.75pt).
-		const QPageSize page(QSizeF(r.width() * 72.0 / 96.0,
-									r.height() * 72.0 / 96.0),
-							 QPageSize::Point);
-		writer.setPageSize(page);
-		writer.setPageMargins(QMarginsF(0, 0, 0, 0));
+		// QPageSize rounds a size within 3 pt of a standard sheet to the
+		// sheet, but knows the sheets upright only (bar Ledger), so a wide
+		// folio is matched upright and turned: otherwise an A3 landscape
+		// folio became a 1190 x 841 pt page while an A3 portrait one was
+		// 842 x 1191, the sheet.
+		QSizeF points(r.width() * 72.0 / 96.0, r.height() * 72.0 / 96.0);
+		const bool wide = points.width() > points.height();
+		if (wide) points.transpose();
+		writer.setPageLayout(QPageLayout(QPageSize(points, QPageSize::Point),
+										 wide ? QPageLayout::Landscape
+											  : QPageLayout::Portrait,
+										 QMarginsF(0, 0, 0, 0)));
 
 		if (first) {
 			if (!painter.begin(&writer)) {
@@ -233,6 +273,10 @@ int exportPdf(QETProject &project, const QString &output,
 	// the cross-references jump inside the document in any PDF viewer.
 	PdfLinks::convertUriToGoTo(output);
 	PdfLinks::removeUnusedPdfxNamespace(output);
+	if (sourceDate.isValid()) {
+		PdfLinks::setDocumentDate(output, sourceDate);
+		PdfLinks::setDocumentIdFromContent(output);
+	}
 
 	out << "Exported " << diagrams.size() << " page(s) -> " << output << "\n";
 	return 0;
@@ -364,10 +408,12 @@ int exportCsv(QETProject &project, const QString &format, const QString &output)
 
 /// Bill of materials from the same project database and default query as the
 /// GUI nomenclature export.
-int exportBom(QETProject &project, const QString &output)
+int exportBom(QETProject &project, const QString &output,
+			  bool includeSlaves, bool includeJunctions)
 {
 	project.dataBase()->updateDB();
-	QSqlQuery query = project.dataBase()->newQuery(BomExport::defaultQuery());
+	QSqlQuery query = project.dataBase()->newQuery(
+			BomExport::defaultQuery(includeSlaves, includeJunctions));
 	if (!query.exec()) {
 		err << "BOM query failed: " << query.lastError().text() << "\n";
 		return 1;
@@ -936,6 +982,9 @@ int run(const QStringList &args)
 	// collected below.
 	QStringList filtered = args;
 	const bool showTerminals = filtered.removeAll("--show-terminals") > 0;
+	// --no-slaves and --no-junctions leave rows out of --export-bom.
+	const bool includeSlaves = filtered.removeAll("--no-slaves") == 0;
+	const bool includeJunctions = filtered.removeAll("--no-junctions") == 0;
 
 	QString flag;
 	QStringList rest;
@@ -993,7 +1042,7 @@ int run(const QStringList &args)
 	if (format == "cables" || format == "wires")
 		return exportCsv(project, format, output);
 	if (format == "bom")
-		return exportBom(project, output);
+		return exportBom(project, output, includeSlaves, includeJunctions);
 	if (format == "wiring")
 		return exportWiring(project, output);
 	if (format == "nets")

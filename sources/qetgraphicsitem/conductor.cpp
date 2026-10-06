@@ -16,6 +16,7 @@
 	along with QElectroTech.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "../qetgraphicsitem/conductor.h"
+#include "../shownkinds.h"
 #include "../lastusedstyle.h"
 #include "../qetproject.h"
 #include "../QPropertyUndoCommand/qpropertyundocommand.h"
@@ -1402,11 +1403,11 @@ bool Conductor::moveSegment(int index, qreal dx, qreal dy)
 bool Conductor::setPathPoints(const QList<QPointF> &scene_points)
 {
 	if (scene_points.size() < 2 || !terminal1 || !terminal2) return false;
-	const auto near = [](const QPointF &a, const QPointF &b) {
+	const auto isNear = [](const QPointF &a, const QPointF &b) {
 		return qAbs(a.x() - b.x()) < 0.5 && qAbs(a.y() - b.y()) < 0.5;
 	};
-	if (!near(scene_points.first(), terminal1->dockConductor()) ||
-		!near(scene_points.last(), terminal2->dockConductor()))
+	if (!isNear(scene_points.first(), terminal1->dockConductor()) ||
+		!isNear(scene_points.last(), terminal2->dockConductor()))
 		return false;
 	QList<QPointF> points;
 	for (int i = 0; i < scene_points.size(); ++i) {
@@ -1522,6 +1523,20 @@ QPointF Conductor::posForText(Qt::Orientations &flag)
 }
 
 /**
+	@brief Conductor::updateTextVisibility
+	Show the text of this conductor if its properties ask for it and wire
+	numbers are not hidden (View > Show). With "one text per potential",
+	call calculateTextItemPosition() afterwards: it hides all texts of the
+	potential but the longest conductor's.
+*/
+void Conductor::updateTextVisibility()
+{
+	ShownKinds::setVisible(m_text_item,
+						   m_properties.type == ConductorProperties::Multi
+						   && m_properties.m_show_text);
+}
+
+/**
 	@brief Conductor::calculateTextItemPosition
 	Move the text at middle of conductor (if is vertical or horizontal)
 	otherwise, move conductor at the middle of the longest segment of conductor.
@@ -1548,10 +1563,11 @@ void Conductor::calculateTextItemPosition()
 
 			//At this point this conductor is the longest conductor we hide all text of conductor_list
 		foreach (Conductor *c, relatedPotentialConductors(false)) {
-					c -> textItem() -> setVisible(false);
+					ShownKinds::setVisible(c -> textItem(), false);
 		}
-			//Make sure text item is visible
-		m_text_item -> setVisible(true);
+			//Make sure text item is visible, unless wire numbers are hidden
+			//(View > Show)
+		ShownKinds::setVisible(m_text_item, true);
 	}
 
 		//position
@@ -1806,11 +1822,7 @@ void Conductor::setProperties(const ConductorProperties &property)
 	m_text_item->setFont(font);
 	m_text_item->setColor(m_properties.text_color);
 
-	if (m_properties.type != ConductorProperties::Multi)
-		m_text_item->setVisible(false);
-	else
-		m_text_item->setVisible(m_properties.m_show_text);
-
+	updateTextVisibility();
 	calculateTextItemPosition();
 	update();
 
@@ -2095,16 +2107,58 @@ QPainterPath Conductor::paintedPath() const
 }
 
 /**
-	@return la liste des positions des jonctions avec d'autres conducteurs
+	@return true if \a scene_point, where this conductor bends with
+	\a bend_type, lies on one of the segments of \a c and \a c does not
+	bend the same way at the same point.
+*/
+bool Conductor::bendMakesJunction(const Conductor *c, const QPointF &scene_point,
+								  Qt::Corner bend_type) const
+{
+		// exprime le point dans les coordonnees de l'autre conducteur
+	const QPointF conductor_point = c -> mapFromScene(scene_point);
+	bool on_conductor = false;
+	for (ConductorSegment *segment : c -> segmentsList())
+	{
+		if (isContained(conductor_point, segment -> firstPoint(), segment -> secondPoint()))
+		{
+			on_conductor = true;
+			break;
+		}
+	}
+	if (!on_conductor)
+		return false;
+
+		// ce point commun ne doit pas etre une bifurcation identique a celle-ci
+	for (const ConductorBend &cb : c -> bends())
+	{
+		if (cb.first == conductor_point && cb.second == bend_type)
+			return false;
+	}
+	return true;
+}
+
+/**
+	@return the positions, in this conductor's coordinates, of the junction
+	dots this conductor draws: each of its bends that lies on another
+	conductor of the same potential, unless that conductor bends the same
+	way at the same point.
 */
 QList<QPointF> Conductor::junctions() const
 {
 	QList<QPointF> junctions_list;
 
-	// pour qu'il y ait des jonctions, il doit y avoir d'autres conducteurs et des bifurcations
-	QList<Conductor *> other_conductors = relatedConductors(this);
 	QList<ConductorBend> bends_list = bends();
-	if (other_conductors.isEmpty() || bends_list.isEmpty()) {
+	if (bends_list.isEmpty()) {
+		return(junctions_list);
+	}
+
+		// Every conductor of the potential on this folio, not only those on
+		// this conductor's own terminals: a bend can lie on a conductor it
+		// shares no terminal with, e.g. when the horizontal parts of a chain
+		// of conductors are dragged over each other (issue #1280).
+	const QList<Conductor *> other_conductors =
+			const_cast<Conductor *>(this)->relatedPotentialConductors(false).values();
+	if (other_conductors.isEmpty()) {
 		return(junctions_list);
 	}
 
@@ -2127,37 +2181,18 @@ QList<QPointF> Conductor::junctions() const
 		// si le point n'est pas une bifurcation, il ne peut etre une jonction (enfin pas au niveau de ce conducteur)
 		if (!is_bend) continue;
 
-		bool is_junction = false;
 		QPointF scene_point = mapToScene(point);
-		foreach(Conductor *c, other_conductors)
+
+		bool is_junction = false;
+		for (Conductor *c : other_conductors)
 		{
-				// exprime le point dans les coordonnees de l'autre conducteur
-			QPointF conductor_point = c -> mapFromScene(scene_point);
-				// recupere les segments de l'autre conducteur
-			QList<ConductorSegment *> c_segments = c -> segmentsList();
-			if (c_segments.isEmpty())
-				continue;
-				// parcoure les segments a la recherche d'un point commun
-			for (int j = 0 ; j < c_segments.count() ; ++ j)
+			if (bendMakesJunction(c, scene_point, current_bend_type))
 			{
-				ConductorSegment *segment = c_segments[j];
-					// un point commun a ete trouve sur ce segment
-				if (isContained(conductor_point, segment -> firstPoint(), segment -> secondPoint()))
-				{
-					is_junction = true;
-					// ce point commun ne doit pas etre une bifurcation identique a celle-ci
-					QList<ConductorBend> other_conductor_bends = c -> bends();
-					foreach(ConductorBend cb, other_conductor_bends)
-					{
-						if (cb.first == conductor_point && cb.second == current_bend_type)
-						{
-							is_junction = false;
-						}
-					}
-				}
-				if (is_junction) junctions_list << point;
+				is_junction = true;
+				break;
 			}
 		}
+		if (is_junction) junctions_list << point;
 	}
 	return(junctions_list);
 }

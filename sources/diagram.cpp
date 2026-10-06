@@ -16,6 +16,7 @@
 	along with QElectroTech.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "diagram.h"
+#include "autoNum/elementautonumschemecommand.h"
 
 #include "ElementsCollection/elementcollectionhandler.h"
 #include "TerminalStrip/GraphicsItem/terminalstripitem.h"
@@ -929,7 +930,7 @@ bool Diagram::toPaintDevice(QPaintDevice &pix,
 	// determine la zone source =  contenu du schema + marges
 	QRectF source_area;
 	if (!use_border_) {
-		source_area = itemsBoundingRect();
+		source_area = visibleItemsBoundingRect();
 		source_area.translate(-margin, -margin);
 		source_area.setWidth (source_area.width () + 2.0 * margin);
 		source_area.setHeight(source_area.height() + 2.0 * margin);
@@ -997,7 +998,7 @@ QSize Diagram::imageSize() const
 	// determine la zone source =  contenu du schema + marges
 	qreal image_width, image_height;
 	if (!use_border_) {
-		QRectF items_rect = itemsBoundingRect();
+		QRectF items_rect = visibleItemsBoundingRect();
 		image_width  = items_rect.width();
 		image_height = items_rect.height();
 	} else {
@@ -1289,6 +1290,13 @@ QDomDocument Diagram::toXml(bool whole_content, bool is_copy_command) {
 			  [](Element *a, Element *b) { return elementSortKey(a) < elementSortKey(b); });
 	std::stable_sort(list_conductors.begin(), list_conductors.end(),
 			  [](Conductor *a, Conductor *b) { return conductorSortKey(a) < conductorSortKey(b); });
+
+		// A copy carries the numberings its elements follow: pasted into
+		// another project, which does not know them, it can offer to import
+		// them (see PasteNumberingImport)
+	if (is_copy_command) {
+		ElementAutoNumSchemeCommand::writeCopiedSchemes(document, dom_root, m_project, list_elements);
+	}
 
 	// correspondence table between the addresses of the terminals and their ids
 	// table de correspondance entre les adresses des bornes et leurs ids
@@ -2838,8 +2846,27 @@ void Diagram::adjustSceneRect()
 {
 	QRectF old_rect = sceneRect();
 	setSceneRect(border_and_titleblock.borderAndTitleBlockRect().united(
-			     itemsBoundingRect()));
+			     visibleItemsBoundingRect()));
 	update(old_rect.united(sceneRect()));
+}
+
+/**
+	@brief Diagram::visibleItemsBoundingRect
+	Same as QGraphicsScene::itemsBoundingRect(), but only counts items that
+	are shown. A hidden item keeps whatever position it last had: the text of
+	a single-line wire, and the wire texts hidden by "one text per potential",
+	are never positioned again and can sit far outside the drawing (#1281).
+	@return the bounding rect of the visible items, in scene coordinates
+*/
+QRectF Diagram::visibleItemsBoundingRect() const
+{
+	QRectF rect;
+	const auto scene_items = items();
+	for (QGraphicsItem *item : scene_items) {
+		if (item->isVisible())
+			rect |= item->sceneBoundingRect();
+	}
+	return rect;
 }
 
 /**

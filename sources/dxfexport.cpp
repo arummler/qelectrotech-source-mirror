@@ -16,6 +16,7 @@
 	along with QElectroTech.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "dxfexport.h"
+#include "shownkinds.h"
 
 #include "conductorsegment.h"
 #include "createdxf.h"
@@ -34,6 +35,7 @@
 #include "qetgraphicsitem/independenttextitem.h"
 #include "qetgraphicsitem/qetshapeitem.h"
 #include "qetgraphicsitem/terminal.h"
+#include "textlines.h"
 
 #include <QGraphicsSimpleTextItem>
 #include <QSet>
@@ -135,6 +137,10 @@ void DxfExport::write(Diagram *diagram, int width, int height,
 		}
 	}
 	for (QGraphicsItem *qgi : std::as_const(stacked_items)) {
+			//Left out like on screen and in print (View > Show, #301)
+		if (ShownKinds::isHidden(qgi)) {
+			continue;
+		}
 		if (Element *elmt = qgraphicsitem_cast<Element *>(qgi)) {
 			list_elements << elmt;
 		} else if (Conductor *f = qgraphicsitem_cast<Conductor *>(qgi)) {
@@ -147,7 +153,8 @@ void DxfExport::write(Diagram *diagram, int width, int height,
 			list_shapes << dii;
 		} else if (DynamicElementTextItem *deti = qgraphicsitem_cast<DynamicElementTextItem *>(qgi)) {
 			list_texts << deti;
-			if (QGraphicsTextItem *xref = deti->slaveXrefItem()) {
+			QGraphicsTextItem *xref = deti->slaveXrefItem();
+			if (xref && !ShownKinds::isHidden(xref)) {
 				list_xref_texts << xref;
 			}
 		} else if (QetGraphicsTableItem *gti = qgraphicsitem_cast<QetGraphicsTableItem *>(qgi)) {
@@ -290,7 +297,7 @@ void DxfExport::write(Diagram *diagram, int width, int height,
 		Createdxf::layer = Layer::WireNumbers;
 		ConductorTextItem *textItem = cond -> textItem();
 
-		if (textItem) {
+		if (textItem && !ShownKinds::isHidden(textItem)) {
 			qreal fontSize = textItem -> font().pointSizeF();
 			if (fontSize < 0)
 				fontSize = textItem -> font().pixelSize();
@@ -352,7 +359,8 @@ void DxfExport::write(Diagram *diagram, int width, int height,
 		qreal y = dti->scenePos().y()
 				- ydir * fontSize * 1.8
 				- xdir * fontSize * 0.9;
-		QStringList lines = dti -> toPlainText().split('\n');
+			//As drawn: a text with a width is wrapped
+		QStringList lines = TextLines::layoutLines(dti -> document());
 		qreal offset = fontSize * 1.6;
 		foreach (QString line, lines) {
 			if (line.size() > 0 && line != "_" )

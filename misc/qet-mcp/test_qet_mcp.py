@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from unittest import mock
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -41,6 +42,9 @@ import qet_mcp as m  # noqa: E402
 
 BINARY = os.environ.get("QET_BINARY", "")
 ELEMENTS = os.environ.get("QET_ELEMENTS", "")
+# Any executable will do where a test never launches the program; macOS
+# keeps true in /usr/bin, not /bin.
+TRUE = shutil.which("true") or "/bin/true"
 EXAMPLES = os.environ.get("QET_EXAMPLES", "")
 
 have_binary = bool(BINARY) and os.access(BINARY, os.X_OK)
@@ -52,6 +56,15 @@ needs_elements = unittest.skipUnless(have_binary and have_elements,
                                      "set QET_BINARY and QET_ELEMENTS")
 needs_examples = unittest.skipUnless(have_binary and have_examples,
                                      "set QET_BINARY and QET_EXAMPLES")
+
+
+def _pdf_page_size(path) -> tuple:
+    """The first page's MediaBox width and height, in points. QPdfWriter
+    writes page dictionaries uncompressed, so no PDF library is needed."""
+    box = re.search(rb"/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)",
+                    Path(path).read_bytes())
+    x0, y0, x1, y1 = map(float, box.groups())
+    return (x1 - x0, y1 - y0)
 
 COIL = "common://10_electric/10_allpole/310_relays_contactors_contacts/01_coils/bobine_ka_a_remanence.elmt"
 SLAVE = ("common://10_electric/10_allpole/310_relays_contactors_contacts/"
@@ -171,7 +184,10 @@ class ToolRegistry(unittest.TestCase):
         "qet_live_run_stored", "qet_live_command", "qet_live_show_folio",
         "qet_live_undo_last", "qet_live_screenshot", "qet_about",
         "qet_recording_list", "qet_recording_read", "qet_recording_check",
-        "qet_recording_remove"})
+        "qet_recording_remove", "qet_layout_check", "qet_live_new_project",
+        "qet_live_open_project", "qet_live_switch_project", "qet_live_save_project",
+        "qet_live_close_project", "qet_live_print", "qet_live_changes",
+        "qet_live_layout_check"})
 
 
 class EditValidation(unittest.TestCase):
@@ -428,6 +444,7 @@ class EditValidation(unittest.TestCase):
             "sort_terminal_strip": [{"op": "sort_terminal_strip", "strip": 0}],
             "add_autonum": [{"op": "add_autonum", "kind": "conductor", "name": "W", "parts": ["string:W"]}],
             "remove_autonum": [{"op": "remove_autonum", "kind": "conductor", "name": "W"}],
+            "rename_autonum": [{"op": "rename_autonum", "kind": "element", "name": "EL", "new_name": "EL2"}],
             "use_conductor_autonum": [f, {"op": "use_conductor_autonum", "folio": "$f", "name": "W"}],
             "use_element_autonum": [{"op": "use_element_autonum", "name": "EL"}],
             "insert_folio": [{"op": "insert_folio", "id": "i", "position": 0}],
@@ -445,6 +462,12 @@ class EditValidation(unittest.TestCase):
             "duplicate_elements": el + [{"op": "duplicate_elements", "id": "d", "folio": "$f",
                                          "elements": ["$e"], "to_folio": "$f", "x": 50, "y": 50}],
             "number_element": el + [{"op": "number_element", "folio": "$f", "element": "$e"}],
+            "renumber_element_autonum": [{"op": "renumber_element_autonum", "name": "EL"}],
+            "free_element_numbers": el + [{"op": "free_element_numbers", "folio": "$f", "element": "$e"}],
+            "assign_element_number": el + [{"op": "assign_element_number", "folio": "$f",
+                                            "element": "$e", "number": 3}],
+            "assign_element_autonum": el + [{"op": "assign_element_autonum", "name": "EL", "folio": "$f",
+                                             "element": "$e", "overwrite": False}],
             "add_table": [f, {"op": "add_table", "id": "t", "folio": "$f", "kind": "nomenclature",
                               "name": "BOM", "query": "SELECT label FROM element_nomenclature_view"}],
             "set_table_position": [f, {"op": "add_table", "id": "t", "folio": "$f", "kind": "nomenclature",
@@ -461,6 +484,16 @@ class EditValidation(unittest.TestCase):
             "set_plc_io": el + [{"op": "set_plc_io", "folio": "$f", "element": "$e",
                                  "index": 0, "property": "address", "value": "1.1"}],
             "remove_plc_io": el + [{"op": "remove_plc_io", "folio": "$f", "element": "$e", "index": 0}],
+            "align_elements": two + [{"op": "align_elements", "folio": "$f",
+                                      "elements": ["$e", "$e2"], "edge": "middle"}],
+            "distribute_elements": two + [{"op": "distribute_elements", "folio": "$f",
+                                           "elements": ["$e", "$e2"], "axis": "vertical",
+                                           "pitch": 80}],
+            "place_element": el + [{"op": "place_element", "folio": "$f", "path": "common://x.elmt",
+                                    "terminal": 0, "next_to": "$e", "next_to_terminal": 1,
+                                    "side": "below", "gap": 60}],
+            "align_terminal": two + [{"op": "align_terminal", "folio": "$f", "element": "$e2",
+                                      "terminal": 0, "to": "$e", "to_terminal": 1}],
         })
         self.assertEqual(set(samples), set(m.OPS),
                          "an op has no sample here: add one so it is exercised")
@@ -505,6 +538,20 @@ class EditValidation(unittest.TestCase):
             with self.subTest(op=c["op"], bad=c.get("property") or c.get("shape") or c.get("kind")):
                 with self.assertRaises(ValueError):
                     self.build([c])
+
+    def test_folio_preset_is_checked_up_front_and_probed_for(self):
+        with self.assertRaisesRegex(ValueError, "unknown folio preset 'b4-portrait'"):
+            self.build([{"op": "set_folio_border", "folio": 0, "property": "preset",
+                         "value": "b4-portrait"}])
+        script = self.build([{"op": "set_folio_border", "folio": 0, "property": "preset",
+                              "value": "Tabloid-Landscape"}])
+        self.assertIn('qet.setFolioBorder(0, "preset", "Tabloid-Landscape")', script)
+        # a build without presets is told so, not left to fail on the call
+        self.assertIn('"folioPresets"', script)
+        self.assertIn("frame", script)
+        plain = self.build([{"op": "set_folio_border", "folio": 0, "property": "columns",
+                             "value": "10"}])
+        self.assertNotIn('"folioPresets"', plain)
 
     def test_version_is_not_a_settable_folio_property(self):
         """setFolioProperty('version') reported success and was overwritten by
@@ -1170,6 +1217,8 @@ class CheckAndContinuityAnswers(unittest.TestCase):
             {"kind": "check", "name": "unnumbered_conductors", "rows": [{"n": 1}, {"n": 2}], "error": ""},
             {"kind": "check", "name": "duplicate_simple_labels", "rows": [], "error": ""},
             {"kind": "check", "name": "empty_folios", "rows": None, "error": "bad SQL"},
+            {"kind": "check", "name": "crowded_terminals", "rows": [], "error": ""},
+            {"kind": "check", "name": "reports_with_several_wires", "rows": [], "error": ""},
             {"kind": "other", "name": "masters_without_manufacturer_reference", "rows": [1]},
         ]
         with self.stub(lines):
@@ -1177,7 +1226,7 @@ class CheckAndContinuityAnswers(unittest.TestCase):
         C = m.CHECKS
         self.assertEqual(r, {
             "ok": False,
-            "summary": {"errors": 1, "warnings": 1, "info": 1, "passed": 1, "check_failures": 2},
+            "summary": {"errors": 1, "warnings": 1, "info": 1, "passed": 3, "check_failures": 2},
             "findings": [
                 {"check": "duplicate_master_labels", "severity": "error", "count": 12,
                  "note": C["duplicate_master_labels"]["note"], "rows": rows[:10]},
@@ -1185,7 +1234,7 @@ class CheckAndContinuityAnswers(unittest.TestCase):
                  "note": C["unlabelled_masters"]["note"], "rows": [{"x": 1}]},
                 {"check": "unnumbered_conductors", "severity": "info", "count": 2,
                  "note": C["unnumbered_conductors"]["note"], "rows": [{"n": 1}, {"n": 2}]}],
-            "passed": ["duplicate_simple_labels"],
+            "passed": ["duplicate_simple_labels", "crowded_terminals", "reports_with_several_wires"],
             "check_failures": [
                 {"check": "empty_folios", "error": "bad SQL"},
                 {"check": "masters_without_manufacturer_reference", "error": "no result came back"}]})
@@ -1276,6 +1325,290 @@ class CheckAndContinuityAnswers(unittest.TestCase):
             self.assertEqual(m.tool_continuity("qet", str(self.qet), folio=0)["finding_count"], 0)
 
 
+def _sym(uuid, x, y, w=20, h=40, label="", terminals=2, name="S"):
+    """A symbol for the layout rules: origin x/y, box centred on it."""
+    return {"uuid": uuid, "name": name, "label": label, "terminals": terminals,
+            "g": {"x": x, "y": y, "rotation": 0, "left": x - w / 2, "top": y - h / 2,
+                  "right": x + w / 2, "bottom": y + h / 2}}
+
+
+def _wire(uuid, a, b, points):
+    return {"uuid": uuid, "ends": [f"{a} terminal 1", f"{b} terminal 0"],
+            "path": [{"x": x, "y": y} for x, y in points], "segs": None}
+
+
+def _vjog(uuid, a, b, xa, xb, y0=120, y1=160):
+    """A wire leaving a's bottom terminal down and entering b's top one."""
+    mid = (y0 + y1) / 2
+    return _wire(uuid, a, b, [(xa, y0), (xa, y0 + 10), (xa, mid), (xb, mid),
+                              (xb, y1 - 10), (xb, y1)])
+
+
+class LayoutRules(unittest.TestCase):
+    """qet_layout_check's scoring and fix planning, on made-up geometry: no
+    QElectroTech needed, so every rule is pinned exactly."""
+
+    def folio(self, elements, conductors, max_shift=40, folio=0):
+        return m._layout_folio({"folio": folio, "elements": elements,
+                                "conductors": conductors}, max_shift)
+
+    def rules(self, r):
+        return sorted(f["rule"] for f in r["findings"])
+
+    def test_simplify_drops_zero_steps_and_merges_runs(self):
+        self.assertEqual(m._simplify([(0, 0), (0, 10), (0, 10), (0, 30), (5, 30), (9, 30)]),
+                         [(0, 0), (0, 30), (9, 30)])
+
+    def test_points_from_segments_and_from_path(self):
+        segs = ["0: (560,150)-(560,160) vertical static",
+                "1: (560,160)-(560,290.5) vertical movable"]
+        self.assertEqual(m._layout_points({"segs": segs}),
+                         [(560.0, 150.0), (560.0, 160.0), (560.0, 290.5)])
+        self.assertEqual(m._layout_points({"path": [{"x": 1, "y": 2}, {"x": 1, "y": 9}]}),
+                         [(1.0, 2.0), (1.0, 9.0)])
+        self.assertIsNone(m._layout_points({"segs": ["garbage"]}))
+        self.assertIsNone(m._layout_points({"segs": None, "path": None}))
+
+    def test_vertical_jog_moves_the_end_that_lands_on_the_grid(self):
+        r = self.folio([_sym("A", 100, 100), _sym("B", 103, 180)],
+                       [_vjog("W", "A", "B", 100, 103)])
+        [f] = r["findings"]
+        self.assertEqual(f["rule"], "avoidable_bend")
+        self.assertEqual((f["offset"], f["bends"], f["folio"]), (3.0, 2, 1))
+        self.assertEqual(f["fix"], {"op": "move_element", "folio": 0, "element": "B",
+                                    "dx": -3.0, "dy": 0.0})
+        self.assertEqual(r["fixes"], [f["fix"]])
+
+    def test_horizontal_jog_nfpa(self):
+        w = _wire("W", "A", "B", [(110, 100), (120, 100), (130, 100), (130, 96),
+                                   (140, 96), (150, 96)])
+        r = self.folio([_sym("A", 100, 100, 20, 20), _sym("B", 160, 96, 20, 20)], [w])
+        [f] = r["findings"]
+        self.assertEqual(f["fix"], {"op": "move_element", "folio": 0, "element": "B",
+                                    "dx": 0.0, "dy": 4.0})
+
+    def test_terminals_not_facing_are_not_a_jog(self):
+        # both terminals send their wire downwards: a U, never straight
+        w = _wire("W", "A", "B", [(100, 120), (100, 140), (103, 140), (103, 120)])
+        r = self.folio([_sym("A", 100, 100), _sym("B", 103, 100, 2, 2)], [w])
+        self.assertNotIn("avoidable_bend", self.rules(r))
+
+    def test_jog_beyond_max_shift_is_left_alone(self):
+        r = self.folio([_sym("A", 100, 100), _sym("B", 160, 180)],
+                       [_vjog("W", "A", "B", 100, 160)], max_shift=40)
+        self.assertEqual(r["findings"], [])
+        self.assertEqual(r["fixes"], [])
+
+    def test_a_straight_wire_pins_its_symbols(self):
+        # A-B straight; B-C jogs: C moves, not B
+        ab = _wire("AB", "A", "B", [(100, 120), (100, 160)])
+        bc = _vjog("BC", "B", "C", 100, 104, 200, 240)
+        r = self.folio([_sym("A", 100, 100), _sym("B", 100, 180), _sym("C", 104, 260)], [ab, bc])
+        self.assertEqual(r["fixes"], [{"op": "move_element", "folio": 0, "element": "C",
+                                       "dx": -4.0, "dy": 0.0}])
+
+    def test_conflict_when_both_ends_are_pinned(self):
+        # A and B each held in line by a straight wire; the A-B jog cannot move
+        wires = [_wire("AX", "X", "A", [(100, 40), (100, 80)]),
+                 _wire("BY", "B", "Y", [(104, 200), (104, 240)]),
+                 _vjog("AB", "A", "B", 100, 104)]
+        r = self.folio([_sym("X", 100, 20), _sym("A", 100, 100), _sym("B", 104, 180),
+                        _sym("Y", 104, 260)], wires)
+        [f] = [f for f in r["findings"] if f["rule"] == "avoidable_bend"]
+        self.assertIsNone(f["fix"])
+        self.assertTrue(f["conflict"])
+
+    def test_a_move_onto_another_symbol_is_not_offered(self):
+        # B can only line up by moving onto D, so A moves instead
+        r = self.folio([_sym("A", 100, 100), _sym("B", 120, 180), _sym("D", 100, 180)],
+                       [_vjog("W", "A", "B", 100, 120)])
+        [f] = [f for f in r["findings"] if f["rule"] == "avoidable_bend"]
+        self.assertEqual(f["fix"]["element"], "A")
+        self.assertEqual(f["fix"]["dx"], 20.0)
+
+    def test_off_grid_symbol_without_wires(self):
+        r = self.folio([_sym("A", 103, 97)], [])
+        [f] = r["findings"]
+        self.assertEqual(f["rule"], "off_grid")
+        self.assertEqual(f["fix"], {"op": "move_element", "folio": 0, "element": "A",
+                                    "dx": -3.0, "dy": 3.0})
+
+    def test_a_lined_up_group_snaps_together(self):
+        # three symbols in line at x=103, off the grid together: all move,
+        # and the wires between them stay straight
+        wires = [_wire("AB", "A", "B", [(103, 120), (103, 160)]),
+                 _wire("BC", "B", "C", [(103, 200), (103, 240)])]
+        r = self.folio([_sym("A", 103, 100), _sym("B", 103, 180), _sym("C", 103, 260)], wires)
+        self.assertEqual(sorted((f["element"], f["dx"]) for f in r["fixes"]),
+                         [("A", -3.0), ("B", -3.0), ("C", -3.0)])
+
+    def test_wire_through_symbol_but_not_frame_or_annotation(self):
+        w = _wire("W", "A", "B", [(100, 120), (100, 300)])
+        elements = [_sym("A", 100, 100), _sym("B", 100, 320),
+                    _sym("K", 100, 200, name="Coil"),                    # in the way
+                    _sym("F", 100, 200, 300, 600, name="Cabinet"),       # frame round A
+                    _sym("T", 100, 250, terminals=0, name="Tag")]        # annotation
+        r = self.folio(elements, [w])
+        hits = [f for f in r["findings"] if f["rule"] == "wire_through_symbol"]
+        self.assertEqual([f["element"] for f in hits], ["K"])
+        self.assertEqual(hits[0]["fix"], {"op": "route_conductor", "folio": 0,
+                                          "conductor": "W"})
+
+    def test_overlap_needs_more_than_one_grid_step(self):
+        touching = self.folio([_sym("A", 100, 100), _sym("B", 110, 100)], [])  # 10 px
+        self.assertNotIn("overlapping_symbols", self.rules(touching))
+        r = self.folio([_sym("A", 100, 100), _sym("B", 105, 100)], [])         # 15 px
+        self.assertIn("overlapping_symbols", self.rules(r))
+
+    def test_crossing_counted_not_at_shared_ends(self):
+        h = _wire("H", "A", "B", [(0, 50), (200, 50)])
+        v = _wire("V", "C", "D", [(100, 0), (100, 200)])
+        t = _wire("T", "A", "E", [(0, 50), (0, 200)])            # meets H at its end
+        r = self.folio([], [h, v, t])
+        self.assertEqual(r["crossings"], 1)
+
+    def test_extra_bends_for_an_l(self):
+        w = _wire("W", "A", "B", [(100, 120), (100, 140), (120, 140), (120, 160),
+                                   (150, 160)])
+        r = self.folio([], [w])
+        [f] = r["findings"]
+        self.assertEqual((f["rule"], f["bends"], f["needed"]), ("extra_bends", 3, 1))
+
+    def test_answer_score_style_and_limit(self):
+        clean = self.folio([_sym("A", 100, 100), _sym("B", 100, 180)],
+                           [_wire("W", "A", "B", [(100, 120), (100, 160)])])
+        a = m._layout_answer([clean], "auto", 50)
+        self.assertEqual((a["score"], a["style"], a["summary"]["straight_wires"]), (100, "iec", 1))
+        self.assertEqual(a["summary"]["flow"], {"vertical": 1.0, "horizontal": 0.0})
+        jog = self.folio([_sym("A", 100, 100), _sym("B", 103, 180), _sym("C", 300, 301)],
+                         [_vjog("W", "A", "B", 100, 103)])
+        a = m._layout_answer([jog], "nfpa", 1)
+        # wires 0/1 clean, symbols 2/3 clean (C off the grid)
+        self.assertEqual(a["score"], round(100 * (0.6 * 0 + 0.4 * 2 / 3)))
+        self.assertEqual(a["style"], "nfpa")
+        self.assertEqual(a["truncated"], 1)
+        self.assertEqual(len(a["fixes"]), 2)
+
+    def test_unread_wires_are_named_not_scored(self):
+        r = self.folio([], [{"uuid": "U", "ends": ["{a} terminal 0", "{b} terminal 0"],
+                             "path": None, "segs": None}])
+        a = m._layout_answer([r], "auto", 50)
+        self.assertEqual(a["summary"]["unread_wires"], 1)
+        self.assertEqual(a["unread_wires"], ["U"])
+        self.assertIn("conductorPath", a["note"])
+        self.assertEqual(a["score"], 100)
+
+
+class LayoutCheckTool(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.qet = Path(self.tmp.name) / "p.qet"
+        self.qet.write_text("<project><diagram/></project>", encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_bad_arguments(self):
+        for kw in ({"style": "ansi"}, {"folio": 0}, {"folio": True},
+                   {"max_shift": -1}, {"max_shift": "4"}, {"limit": -1}):
+            with self.subTest(kw=kw), self.assertRaises(ValueError):
+                m.tool_layout_check("qet", str(self.qet), **kw)
+        with self.assertRaises(ValueError):
+            m.tool_layout_check("qet", str(self.qet) + ".missing")
+
+    def test_script_reads_the_chosen_folio_only(self):
+        seen = {}
+
+        def run(binary, args, **kw):
+            seen.update(kw)
+            return {"stdout": "", "stderr": ""}
+        with mock.patch.object(m, "_run_qet", run):
+            r = m.tool_layout_check("qet", str(self.qet), folio=3)
+        self.assertIn("var only = 2;", seen["script"])
+        self.assertNotIn("save", seen["script"])
+        self.assertFalse(r["ok"])
+        self.assertIn("no layout came back", r["hint"])
+
+    def test_answer_from_log_lines(self):
+        rec = {"kind": "layout", "folio": 0,
+               "elements": [_sym("A", 100, 100), _sym("B", 103, 180)],
+               "conductors": [_vjog("W", "A", "B", 100, 103)]}
+        out = "noise\n" + m._MARKER + "{bad json\n" + m._MARKER + json.dumps(rec)
+        with mock.patch.object(m, "_run_qet", lambda *a, **k: {"stdout": out, "stderr": ""}):
+            r = m.tool_layout_check("qet", str(self.qet))
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["summary"]["avoidable_bends"], 1)
+        self.assertEqual(r["fixes"][0]["element"], "B")
+
+    def test_a_launch_hint_is_passed_on(self):
+        rec = {"kind": "layout", "folio": 0, "elements": [], "conductors": []}
+        out = m._MARKER + json.dumps(rec)
+        with mock.patch.object(m, "_run_qet",
+                               lambda *a, **k: {"stdout": out, "stderr": "", "hint": "boom"}):
+            r = m.tool_layout_check("qet", str(self.qet))
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["hint"], "boom")
+
+
+class LayoutOpsValidation(unittest.TestCase):
+    """align_elements, distribute_elements, place_element, align_terminal:
+    their arguments are checked before QElectroTech starts, and the script
+    asks for terminalPosition() only when an op needs it."""
+
+    A, B, C = ("{00000000-0000-0000-0000-00000000000a}", "{00000000-0000-0000-0000-00000000000b}",
+               "{00000000-0000-0000-0000-00000000000c}")
+
+    def bad(self, op, needle):
+        with self.assertRaises(ValueError) as cm:
+            m._build_script([op], "/tmp/x.qet")
+        self.assertIn(needle, str(cm.exception))
+
+    def test_align_arguments(self):
+        self.bad({"op": "align_elements", "folio": 0, "elements": [self.A, self.B],
+                  "edge": "diagonal"}, "unknown edge")
+        self.bad({"op": "align_elements", "folio": 0, "elements": [self.A], "edge": "left"},
+                 "at least 2")
+
+    def test_distribute_arguments(self):
+        self.bad({"op": "distribute_elements", "folio": 0, "elements": [self.A, self.B, self.C],
+                  "axis": "diagonal"}, "unknown axis")
+        self.bad({"op": "distribute_elements", "folio": 0, "elements": [self.A, self.B],
+                  "axis": "horizontal"}, "at least 3")
+        self.bad({"op": "distribute_elements", "folio": 0, "elements": [self.A, self.B, self.C],
+                  "axis": "vertical", "pitch": -10}, "pitch must be >= 0")
+        m._build_script([{"op": "distribute_elements", "folio": 0, "elements": [self.A, self.B],
+                          "axis": "vertical", "pitch": 80}], "/tmp/x.qet")
+
+    def test_place_arguments(self):
+        base = {"op": "place_element", "folio": 0, "path": "common://x.elmt", "terminal": 0,
+                "next_to": self.A, "next_to_terminal": 1}
+        self.bad({**base, "side": "up"}, "unknown side")
+        self.bad({**base, "gap": 0}, "gap must be > 0")
+        self.bad({**base, "terminal": True}, "terminal index or its uuid")
+        self.bad({**base, "terminal": -1}, "terminal index or its uuid")
+        self.bad({**base, "terminal": "A1"}, "terminal index or its uuid")
+        s = m._build_script([{**base, "terminal": "{11111111-2222-3333-4444-555555555555}"}],
+                            "/tmp/x.qet")
+        self.assertIn('qetMcpPlace(0, "common://x.elmt", "{11111111-2222-3333-4444-555555555555}", '
+                      f'"{self.A}", 1, "", 40, 0)', s)
+
+    def test_helpers_are_called_bare_and_needs_follow_use(self):
+        place = m._build_script([{"op": "align_terminal", "folio": 0, "element": self.A,
+                                  "terminal": 0, "to": self.B, "to_terminal": 1}], "/tmp/x.qet")
+        self.assertIn("qetMcpAlignTerminal(0, ", place)
+        self.assertNotIn("qet.qetMcp", place)
+        self.assertIn('"terminalPosition"', place)
+        plain = m._build_script([{"op": "move_element", "folio": 0, "element": self.A,
+                                  "dx": 1, "dy": 0}], "/tmp/x.qet")
+        self.assertNotIn("terminalPosition\"", plain.split("var need = ")[1].split(";")[0])
+        self.assertNotIn("qetMcpAlign\"", plain)
+
+    def test_defaults_fill_in(self):
+        s = m._build_script([{"op": "align_elements", "folio": 0, "elements": [self.A, self.B],
+                              "edge": "center"}], "/tmp/x.qet")
+        self.assertIn(f'qetMcpAlign(0, ["{self.A}", "{self.B}"], "center", "")', s)
+
+
 class ElementSearch(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1306,6 +1639,46 @@ class ElementSearch(unittest.TestCase):
         self.put("a/x.elmt", {"en": "Big red coil"})
         self.assertEqual(m.tool_element_search(str(self.root), "red coil")["total_matches"], 1)
         self.assertEqual(m.tool_element_search(str(self.root), "red fuse")["total_matches"], 0)
+
+    def test_a_two_letter_word_matches_only_a_whole_word(self):
+        """#1178: "NC contact" offered a remanence coil, because "nc" is in
+        "remanence" and "contact" is in its folder's name."""
+        self.put("contacts/coil.elmt", {"en": "Remanence coil"})
+        self.put("contacts/nc.elmt", {"en": "Simple contact (NC)"})
+        self.put("contacts/klemme.elmt", {"de": "Reihenklemme 3pn"})
+        names = lambda q: [r["path"] for r in m.tool_element_search(str(self.root), q)["results"]]
+        self.assertEqual(names("NC contact"), ["common://contacts/nc.elmt"])
+        # longer words, and short ones with a digit, still match inside a word
+        self.assertEqual(names("klemme"), ["common://contacts/klemme.elmt"])
+        self.assertEqual(names("3p"), ["common://contacts/klemme.elmt"])
+
+    def test_every_spelling_of_no_and_nc_is_the_same(self):
+        self.put("a/nf.elmt", {"fr": "Contact simple (NF)"})
+        self.put("a/no.elmt", {"en": "Contact N/O"})
+        self.put("a/x_nc.elmt", {"en": "Contact"})
+        self.put("a/open.elmt", {"en": "Normally open contact"})
+        g = lambda q: sorted(r["path"][len("common://a/"):]
+                             for r in m.tool_element_search(str(self.root), q)["results"])
+        for q in ("NC contact", "normally closed contact", "NF contact", "contact normalement fermé"):
+            with self.subTest(q=q):
+                self.assertEqual(g(q), ["nf.elmt", "x_nc.elmt"])
+        for q in ("NO contact", "normally open contact", "N/O contact", "contact normalement ouvert"):
+            with self.subTest(q=q):
+                self.assertEqual(g(q), ["no.elmt", "open.elmt"])
+
+    def test_schematic_symbols_come_before_drawings_and_makers_parts(self):
+        """#1178: "emergency stop" offered a maker's part and two
+        assembly-plan drawings before the push button."""
+        self.put("10_electric/20_manufacturers_articles/idec/my_emg.elmt", {"en": "Emergency stop"})
+        self.put("10_electric/98_graphics/99_assembly_plan/au.elmt", {"en": "Emergency stop"})
+        self.put("10_electric/99_miscellaneous_unsorted/au.elmt", {"en": "Emergency stop"})
+        self.put("10_electric/10_allpole/20_push_buttons/au.elmt", {"en": "Emergency stop (NC)"})
+        self.put("cadtb/estop.elmt", {"en": "Emergency stop, own"})
+        r = m.tool_element_search(str(self.root), "emergency stop")["results"]
+        self.assertEqual([e["path"] for e in r[:2]],
+                         ["common://10_electric/10_allpole/20_push_buttons/au.elmt",
+                          "common://cadtb/estop.elmt"])
+        self.assertEqual(len(r), 5)
 
     def test_filters(self):
         self.put("a/m.elmt", {"en": "Coil"}, link="master", kind="coil")
@@ -2459,7 +2832,20 @@ class PathPolicy(unittest.TestCase):
         guarded = {name for name, spec in m._DATA_PATHS.items() if spec.get("write")}
         advertised = {t["name"] for t in m.TOOLS
                       if "overwrite" in t["inputSchema"].get("properties", {})}
-        self.assertEqual(guarded, advertised - m._OVERWRITE_OWN_FILE)
+        self.assertEqual(guarded - m._NEVER_OVERWRITE, advertised - m._OVERWRITE_OWN_FILE)
+        self.assertFalse(advertised & m._NEVER_OVERWRITE)
+
+    def test_never_overwrite_tools_ignore_the_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "exists.qet"
+            target.write_text("x")
+            with mock.patch.dict(os.environ, {"QET_MCP_WORKSPACE": d}):
+                for args in ({"path": str(target)}, {"path": str(target), "overwrite": True}):
+                    with self.assertRaisesRegex(ValueError, "only creates new files"):
+                        m.enforce_path_policy("qet_live_new_project", args)
+                m.enforce_path_policy("qet_live_new_project", {"path": str(Path(d) / "new.qet")})
+                with self.assertRaises(ValueError):
+                    m.enforce_path_policy("qet_live_new_project", {"path": "/etc/new.qet"})
 
     def test_every_data_path_argument_is_guarded(self):
         """The other direction: a tool whose schema takes a data path must be
@@ -2625,7 +3011,9 @@ class BinaryPolicy(unittest.TestCase):
         del os.environ["QET_BINARY"]
         args = {"project": str(self.root / "ok.qet")}
         inst.enforce_path_policy("qet_query", args)
-        self.assertEqual(args["binary"], str(exe.resolve()))
+        # samefile: on a file system that ignores case (macOS, Windows)
+        # the server finds it under another of its spellings.
+        self.assertTrue(Path(args["binary"]).samefile(exe), args["binary"])
         self.assertEqual(args["elements_dir"], str((root / "elements").resolve()))
 
     def test_a_copy_saved_anywhere_is_not_an_install(self):
@@ -2704,7 +3092,7 @@ class ElementsDirSetting(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as coll, \
                 mock.patch.object(m.subprocess, "run", run):
-            m._run_qet("/bin/true", ["x.qet"], elements_dir=coll)
+            m._run_qet(TRUE, ["x.qet"], elements_dir=coll)
         want = m._collection_setting(Path(coll))
         self.assertEqual(seen, {"QElectroTech.ini": want, "QElectroTech.conf": want})
         self.assertIn(f"common-collection-path={Path(coll).as_posix()}", want)
@@ -2746,9 +3134,9 @@ class ScriptingDisabledHint(unittest.TestCase):
         saved = m.subprocess.run
         m.subprocess.run = self.fake_run(returncode, stderr)
         try:
-            # /bin/true only has to exist and be executable: it is copied
+            # TRUE only has to exist and be executable: it is copied
             # into the sandbox and then never actually launched.
-            return m._run_qet("/bin/true", ["x.qet"], **kw)
+            return m._run_qet(TRUE, ["x.qet"], **kw)
         finally:
             m.subprocess.run = saved
 
@@ -3101,7 +3489,7 @@ class LiveClient(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "live mode is off"):
             m.tool_live_status()
         self.info(None)
-        with self.assertRaisesRegex(ValueError, "Continuer"):
+        with self.assertRaisesRegex(ValueError, "Continue"):
             m.tool_live_status()
 
     def test_requests_carry_the_token_and_the_script_id(self):
@@ -3161,10 +3549,194 @@ class LiveClient(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.tool_live_show_folio("2")
 
+    def test_new_project_sends_only_what_was_given(self):
+        self.session()
+        m.tool_live_new_project()
+        m.tool_live_new_project("Pump station", 3, "/tmp/x/pump.qet")
+        self.assertEqual([{k: v for k, v in r.items() if k not in ("token", "id")}
+                          for r in self.seen],
+                         [{"cmd": "new_project", "folios": 1},
+                          {"cmd": "new_project", "folios": 3, "title": "Pump station",
+                           "path": "/tmp/x/pump.qet"}])
+        for bad in (0, 101, "2", True):
+            with self.assertRaises(ValueError):
+                m.tool_live_new_project(folios=bad)
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            m.tool_live_new_project(path="pump.qet")
+        self.assertEqual(len(self.seen), 2)
+
+    def test_open_and_switch_send_only_what_was_given(self):
+        self.session()
+        m.tool_live_open_project("/tmp/x/pump.qet")
+        m.tool_live_switch_project(1)
+        m.tool_live_switch_project(path="/tmp/x/pump.qet")
+        self.assertEqual([{k: v for k, v in r.items() if k not in ("token", "id")}
+                          for r in self.seen],
+                         [{"cmd": "open_project", "path": "/tmp/x/pump.qet"},
+                          {"cmd": "switch_project", "index": 1},
+                          {"cmd": "switch_project", "path": "/tmp/x/pump.qet"}])
+        for bad in ({}, {"index": 0, "path": "/a.qet"}, {"index": -1},
+                    {"index": True}, {"path": "rel.qet"}):
+            with self.assertRaises(ValueError):
+                m.tool_live_switch_project(**bad)
+        for bad in ("", "rel.qet"):
+            with self.assertRaises(ValueError):
+                m.tool_live_open_project(bad)
+        self.assertEqual(len(self.seen), 3)
+
+    def test_save_close_print_changes_send_only_what_was_given(self):
+        self.session()
+        m.tool_live_save_project()
+        m.tool_live_save_project("/tmp/x/as.qet")
+        m.tool_live_close_project()
+        m.tool_live_close_project(2)
+        m.tool_live_print()
+        m.tool_live_print([0, 2], printer="HP")
+        m.tool_live_print("current", output_file="/tmp/x/out.pdf")
+        m.tool_live_changes()
+        m.tool_live_changes(4)
+        self.assertEqual([{k: v for k, v in r.items() if k not in ("token", "id")}
+                          for r in self.seen], [
+            {"cmd": "save_project"}, {"cmd": "save_project", "path": "/tmp/x/as.qet"},
+            {"cmd": "close_project"}, {"cmd": "close_project", "index": 2},
+            {"cmd": "print", "folios": "all"},
+            {"cmd": "print", "folios": [0, 2], "printer": "HP"},
+            {"cmd": "print", "folios": "current", "output_file": "/tmp/x/out.pdf"},
+            {"cmd": "changes"}, {"cmd": "changes", "since": 4}])
+        bad = [lambda: m.tool_live_save_project("rel.qet"),
+               lambda: m.tool_live_close_project(-1),
+               lambda: m.tool_live_close_project(True),
+               lambda: m.tool_live_print("some"),
+               lambda: m.tool_live_print([]),
+               lambda: m.tool_live_print([0, -1]),
+               lambda: m.tool_live_print(printer="HP", output_file="/tmp/a.pdf"),
+               lambda: m.tool_live_print(output_file="out.pdf"),
+               lambda: m.tool_live_changes(-2)]
+        for call in bad:
+            with self.assertRaises(ValueError):
+                call()
+        self.assertEqual(len(self.seen), 9)
+
+    def test_writing_live_tools_need_script_consent(self):
+        self.session()
+        with mock.patch.dict(os.environ, {"QET_ENABLE_SCRIPTING": ""}):
+            for call in (m.tool_live_save_project, m.tool_live_close_project,
+                         m.tool_live_print):
+                with self.assertRaises(ValueError):
+                    call()
+        self.assertEqual(self.seen, [])
+
+    def test_new_project_needs_script_consent(self):
+        self.session()
+        with mock.patch.dict(os.environ, {"QET_ENABLE_SCRIPTING": ""}):
+            with self.assertRaises(ValueError):
+                m.tool_live_new_project()
+        self.assertEqual(self.seen, [])
+
     def test_stale_session_file(self):
         self.info({"socket": self.sock_path + "-gone", "token": "T0K"})
         with self.assertRaisesRegex(ValueError, "could not reach"):
             m.tool_live_status()
+class HouseStyleLayoutRules(unittest.TestCase):
+    """The house-style rules of the layout check, on made-up geometry."""
+
+    def el(self, uuid, x, y, w=20, h=40, label="", labelbox=None):
+        return {"uuid": uuid, "name": uuid, "label": label, "terminals": 2,
+                "g": {"x": x, "y": y, "left": x - w / 2, "top": y - h / 2,
+                      "right": x + w / 2, "bottom": y + h / 2}, "labelbox": labelbox}
+
+    def wire(self, uuid, a, b, path):
+        return {"uuid": uuid, "ends": [a + " terminal 0", b + " terminal 1"],
+                "path": [{"x": x, "y": y} for x, y in path]}
+
+    def rules(self, data):
+        return sorted(f["rule"] for f in m._layout_folio(dict(folio=0, **data), 40)["findings"]
+                      if f["rule"] in ("label_on_wire", "four_way_junction", "misaligned_branch"))
+
+    def test_label_over_a_wire_and_clear_of_it(self):
+        els = [self.el("a", 100, 100, label="-K1",
+                       labelbox={"left": 95, "top": 150, "right": 120, "bottom": 160}),
+               self.el("b", 100, 300)]
+        over = [self.wire("w", "a", "b", [(100, 120), (100, 280)])]
+        self.assertEqual(self.rules({"elements": els, "conductors": over}), ["label_on_wire"])
+        els[0]["labelbox"] = {"left": 120, "top": 150, "right": 145, "bottom": 160}
+        self.assertEqual(self.rules({"elements": els, "conductors": over}), [])
+
+    def test_four_way_dot_but_not_a_t(self):
+        els = [self.el(k, x, y) for k, x, y in
+               (("n", 200, 100), ("s", 200, 300), ("e", 300, 200), ("w", 100, 200))]
+        four = [self.wire("1", "n", "s", [(200, 120), (200, 200), (200, 280)]),
+                self.wire("2", "w", "e", [(110, 200), (200, 200), (290, 200)])]
+        # Two straight wires through one point have no vertex there...
+        self.assertEqual(self.rules({"elements": els, "conductors": four}), [])
+        star = [self.wire("1", "n", "s", [(200, 120), (200, 200)]),
+                self.wire("2", "s", "n", [(200, 280), (200, 200)]),
+                self.wire("3", "w", "e", [(110, 200), (200, 200)]),
+                self.wire("4", "e", "w", [(290, 200), (200, 200)])]
+        self.assertEqual(self.rules({"elements": els, "conductors": star}), ["four_way_junction"])
+        self.assertEqual(self.rules({"elements": els, "conductors": star[:3]}), [])
+
+    def test_side_branch_out_of_line_like_the_motor_starter(self):
+        # main column at x 500, branch symbols at 580 (hold-in) and 660 (lamp)
+        els = [self.el("s2", 500, 470), self.el("hold", 580, 470), self.el("coil", 500, 580),
+               self.el("lamp", 660, 580)]
+        wires = [self.wire("1", "s2", "hold", [(500, 450), (580, 450)]),
+                 self.wire("2", "coil", "lamp", [(500, 560), (660, 560)]),
+                 self.wire("3", "s2", "coil", [(500, 490), (500, 560)])]
+        self.assertEqual(self.rules({"elements": els, "conductors": wires}), ["misaligned_branch"])
+        els[3] = self.el("lamp", 580, 580)
+        wires[1] = self.wire("2", "coil", "lamp", [(500, 560), (580, 560)])
+        self.assertEqual(len(wires), 3)
+        self.assertEqual(self.rules({"elements": els, "conductors": wires}), [])
+
+
+class StandardSymbols(unittest.TestCase):
+    def test_absent_listed_and_broken(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "standard-symbols.json"
+            with mock.patch.dict(os.environ, {"QET_MCP_STANDARD_SYMBOLS": str(f)}):
+                self.assertIsNone(m.standard_symbols())
+                f.write_text(json.dumps({"updated": "2026-10-05", "roles": [
+                    {"id": "coil", "label": "Coil", "letter": "K", "terminals": ["A1", "A2"],
+                     "path": "common://10_electric/x/bobine3.elmt", "score": 99},
+                    {"id": "none_fit", "label": "Nothing", "path": None}]}))
+                got = m.standard_symbols()
+                self.assertEqual(got["roles"], [{"id": "coil", "label": "Coil", "letter": "K",
+                                                 "path": "common://10_electric/x/bobine3.elmt",
+                                                 "terminals": ["A1", "A2"]}])
+                f.write_text("{not json")
+                self.assertIn("could not be read", m.standard_symbols()["error"])
+
+    def test_default_location_is_qet_data_folder(self):
+        with mock.patch.dict(os.environ, {"QET_MCP_STANDARD_SYMBOLS": ""}):
+            self.assertEqual(m.standard_symbols_file({"folders": {"data": "/x/data"}}),
+                             Path("/x/data/standard-symbols.json"))
+
+
+class ElementIndexCache(unittest.TestCase):
+    def test_second_process_reads_the_cache_and_a_change_rebuilds(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "elements"
+            root.mkdir()
+            elmt = ('<definition type="element" link_type="simple" width="20" height="20">'
+                    '<names><name lang="en">{}</name></names><description>'
+                    '<terminal x="0" y="-10" orientation="n" name="1"/></description></definition>')
+            (root / "a.elmt").write_text(elmt.format("Alpha coil"))
+            with mock.patch.dict(os.environ, {"QET_MCP_CACHE_DIR": str(Path(d) / "cache")}):
+                m._ELEMENT_INDEX.clear()
+                first = m._index_collection(root)
+                self.assertTrue(m._index_cache_file(root.resolve()).is_file())
+                m._ELEMENT_INDEX.clear()        # a new server process
+                with mock.patch.object(m.ET, "parse", side_effect=AssertionError("parsed")):
+                    again = m._index_collection(root)
+                self.assertEqual([i["path"] for i in again], [i["path"] for i in first])
+                self.assertEqual(again[0]["haystack"], first[0]["haystack"])
+                (root / "b.elmt").write_text(elmt.format("Beta lamp"))
+                m._ELEMENT_INDEX.clear()
+                self.assertEqual(len(m._index_collection(root)), 2)
+                m._ELEMENT_INDEX.clear()
+
+
 class AssistantInfoFile(unittest.TestCase):
     """qet-assistant.json: QElectroTech says where things are; the server
     believes it over its own per-platform guess."""
@@ -3211,6 +3783,15 @@ class AssistantInfoFile(unittest.TestCase):
         self.assertEqual(about["live"], {"open": True, "pid": 7})
         self.assertNotIn("SECRET", json.dumps(about))
         self.assertEqual(about["script_api"], ["int currentFolio()"])
+
+    def test_house_style_passes_through(self):
+        self.write(house_style="Grid: never off. Inputs left, outputs right.")
+        about = m.tool_about()
+        self.assertEqual(about["house_style"], "Grid: never off. Inputs left, outputs right.")
+
+    def test_house_style_null_when_unset(self):
+        self.write(house_style=None)
+        self.assertIsNone(m.tool_about()["house_style"])
 
     def test_first_contact_carries_the_instructions(self):
         reply = m.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
@@ -3276,7 +3857,7 @@ class Recordings(unittest.TestCase):
     def test_check_needs_an_after(self):
         self.make("r2", after=False)
         with self.assertRaisesRegex(ValueError, "no after.qet"):
-            m.tool_recording_check("/bin/true", "r2", "qet.log(1);")
+            m.tool_recording_check(TRUE, "r2", "qet.log(1);")
 
     def test_remove_needs_consent(self):
         d = self.make("r3")
@@ -3451,6 +4032,73 @@ class ProjectNewValidation(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         m.tool_project_new("/x", new, **({"title": "t"} | kw))
             self.assertFalse(Path(new).exists())
+
+
+class BomExportOptions(unittest.TestCase):
+    """qet_export's no_slaves and no_junctions become --export-bom flags (#1178)."""
+
+    def run_export(self, format="bom", **kw):
+        seen = []
+        def fake(binary, args, timeout=180, **rest):
+            seen.extend(args)
+            return {"ok": True}
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp) / "a.qet"
+            proj.write_text("<project/>")
+            with unittest.mock.patch.object(m, "_run_qet", fake):
+                m.tool_export("qet", str(proj), format, str(Path(tmp) / "o.csv"), **kw)
+        return seen
+
+    def test_off_by_default(self):
+        args = self.run_export()
+        self.assertNotIn("--no-slaves", args)
+        self.assertNotIn("--no-junctions", args)
+
+    def test_flags_after_the_output(self):
+        args = self.run_export(no_slaves=True, no_junctions=True)
+        self.assertEqual(args[0], "--export-bom")
+        self.assertEqual(args[3:], ["--no-slaves", "--no-junctions"])
+
+    def test_refused_for_other_formats(self):
+        with self.assertRaises(ValueError):
+            self.run_export(format="wiring", no_junctions=True)
+
+
+class ReproducibleExport(unittest.TestCase):
+    """qet_export's "reproducible" sets SOURCE_DATE_EPOCH for the run."""
+
+    def run_export(self, **kw):
+        seen = {}
+        def fake(binary, args, timeout=180, **rest):
+            seen.update(rest)
+            return {"ok": True}
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp) / "a.qet"
+            proj.write_text("<project/>")
+            with unittest.mock.patch.object(m, "_run_qet", fake):
+                m.tool_export("qet", str(proj), "pdf", str(Path(tmp) / "o.pdf"), **kw)
+        return seen.get("extra_env")
+
+    def test_off_by_default(self):
+        self.assertIsNone(self.run_export())
+
+    def test_zero_unless_told_otherwise(self):
+        with unittest.mock.patch.dict(os.environ):
+            os.environ.pop("SOURCE_DATE_EPOCH", None)
+            self.assertEqual(self.run_export(reproducible=True),
+                             {"SOURCE_DATE_EPOCH": "0"})
+
+    def test_the_servers_own_variable_then_the_callers_value(self):
+        with unittest.mock.patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1600000000"}):
+            self.assertEqual(self.run_export(reproducible=True),
+                             {"SOURCE_DATE_EPOCH": "1600000000"})
+            self.assertEqual(self.run_export(reproducible=True, source_date_epoch=5),
+                             {"SOURCE_DATE_EPOCH": "5"})
+
+    def test_a_bad_date_is_refused_before_launching(self):
+        for bad in (-1, "soon", 1.5, True):
+            with self.subTest(value=bad), self.assertRaises(ValueError):
+                self.run_export(reproducible=True, source_date_epoch=bad)
 
 
 class ReadTools(unittest.TestCase):
@@ -4329,6 +4977,55 @@ class Integration(unittest.TestCase):
         self.assertEqual(ch["displayrows"], ["true", "false"])
         self.assertEqual(m.tool_project_info(r["output"])["title"], "Renamed")
 
+    def test_folio_preset_fits_the_sheet(self):
+        """A preset fills the sheet as nearly as whole-number sizes allow,
+        never over it, allowing for the title block, and the PDF export
+        writes the page on the sheet itself -- in landscape too, which it
+        did not until the export matched a wide page upright and turned it
+        (an A3 landscape folio was a 1190 x 841 pt page)."""
+        base = self.sb.new(folios=1)
+        # QPageSize's sheets, upright, in whole points
+        sheets = {"a0": (2384, 3370), "a1": (1684, 2384), "a2": (1191, 1684),
+                  "a3": (842, 1191), "a4": (595, 842), "a5": (420, 595),
+                  "letter": (612, 792), "legal": (612, 1008), "tabloid": (792, 1224),
+                  "ledger": (792, 1224)}
+        self.assertEqual(sorted(f"{p}-{o}" for p in sheets for o in ("portrait", "landscape")),
+                         sorted(m.FOLIO_PRESETS))
+        for paper, (w, h) in sheets.items():
+            for orientation in ("portrait", "landscape"):
+                name = f"{paper}-{orientation}"
+                with self.subTest(preset=name):
+                    r = self.ok(self.sb.edit(base, [{"op": "set_folio_border", "folio": 0,
+                                                     "property": "preset", "value": name}]))
+                    note = r["operations"][0]["note"]
+                    got = re.search(r"frame ([\d.]+) x ([\d.]+) pt", note)
+                    self.assertIsNotNone(got, note)
+                    sheet = (h, w) if orientation == "landscape" else (w, h)
+                    for have, want in zip(map(float, got.groups()), sheet):
+                        self.assertLessEqual(have, want, note)
+                        self.assertGreater(have, want - 3, note)
+                    pdf = Path(r["output"]).with_suffix(".pdf")
+                    self.assertTrue(m.tool_export(BINARY, r["output"], "pdf", str(pdf))["ok"])
+                    self.assertEqual(_pdf_page_size(pdf), tuple(map(float, sheet)), note)
+
+    def test_folio_preset_tabloid_is_the_requested_grid(self):
+        """From a default folio, tabloid landscape is 23 x 70 by 12 x 82:
+        the grid a user had worked out by hand, which the export writes on
+        a 1224 x 792 pt page. It keeps the folio's look -- 9 x 179 by 5 x 197
+        would fill the sheet to the pixel, and is no use to anyone."""
+        base = self.sb.new(folios=1)
+        r = self.ok(self.sb.edit(base, [{"op": "set_folio_border", "folio": 0,
+                                         "property": "preset", "value": "tabloid-landscape"}]))
+        ch = r["diff"]["folios"]["changed"][0]["changed"]
+        self.assertEqual((ch["cols"][1], ch["colsize"][1], ch["rows"][1], ch["rowsize"][1]),
+                         ("23", "70", "12", "82"))
+        self.assertIn("frame 1223.25 x 791.25 pt", r["operations"][0]["note"])
+        # one command: one undo puts the whole frame back
+        r = self.ok(self.sb.edit(base, [{"op": "set_folio_border", "folio": 0,
+                                         "property": "preset", "value": "tabloid-landscape"},
+                                        {"op": "undo"}]))
+        self.assertFalse(r["diff"]["folios"].get("changed"))
+
     def test_folio_frame_bounds_are_refused(self):
         """Counts are 1-99 and sizes 1-1000. 0 is what the application's own
         panel allows at the bottom, and was left refused rather than assumed
@@ -5068,6 +5765,24 @@ class Integration(unittest.TestCase):
         self.assertEqual(found["masters_without_manufacturer_reference"]["count"], 2)
         self.assertFalse(c["ok"])
 
+    def test_check_finds_a_crowded_terminal(self):
+        """Five wires on one terminal of a coil: crowded_terminals reports
+        that terminal once, with its count; four would pass."""
+        base = self.sb.new()
+        ids = "habcde"
+        r = self.ok(self.sb.edit(base, [
+            *[{"op": "add_element", "id": x, "folio": 0, "path": COIL,
+               "x": 100 + i * 120, "y": 100 + i * 90} for i, x in enumerate(ids)],
+            *[{"op": "add_conductor", "folio": 0, "from": "$h", "from_terminal": 0,
+               "to": f"${x}", "to_terminal": 0} for x in ids[1:]]]))
+        c = m.tool_check(BINARY, r["output"], checks=["crowded_terminals",
+                                                       "reports_with_several_wires"])
+        found = {f["check"]: f for f in c["findings"]}
+        self.assertEqual(found["crowded_terminals"]["count"], 1, c)
+        self.assertEqual(found["crowded_terminals"]["rows"][0]["wires"], 5)
+        self.assertEqual(found["crowded_terminals"]["rows"][0]["element_type"], "master")
+        self.assertIn("reports_with_several_wires", c["passed"])
+
     def test_check_passes_a_clean_project(self):
         base = self.sb.new()
         r = self.ok(self.sb.edit(base, [
@@ -5151,6 +5866,173 @@ class Integration(unittest.TestCase):
         fake.chmod(0o755)
         r = m.tool_edit(str(fake), self.sb.new(), [{"op": "add_folio"}], self.sb.p("x.qet"), timeout=15)
         self.assertFalse(r["ok"])
+
+
+@needs_elements
+class LayoutIntegration(unittest.TestCase):
+    """A drawing made the way an assistant makes one -- symbols placed by
+    eye a few pixels out of line -- comes out straight and on the grid
+    after one round of qet_layout_check's fixes, in both styles."""
+
+    def setUp(self):
+        self.sb = Sandbox()
+
+    def tearDown(self):
+        self.sb.close()
+
+    def draw(self, style):
+        if style == "iec":       # current paths: columns, wires vertical
+            pos = [(100, 100), (103, 200), (96, 300), (301, 100), (298, 200), (300, 300)]
+        else:                    # rungs: rows, wires horizontal
+            pos = [(100, 100), (200, 104), (300, 97), (100, 301), (200, 298), (300, 300)]
+        ops = []
+        for k, (x, y) in enumerate(pos):
+            ops.append({"op": "add_element", "folio": 0, "path": [TERMINAL, SLAVE, COIL][k % 3],
+                        "x": x, "y": y, "id": f"e{k}"})
+            if style == "nfpa":
+                ops.append({"op": "rotate_element", "folio": 0, "element": f"$e{k}",
+                            "angle": 270})
+        for c in (0, 3):
+            # borne_2's bottom terminal is index 2 (index 1 is its side one)
+            ops.append({"op": "add_conductor", "folio": 0, "from": f"$e{c}", "from_terminal": 2,
+                        "to": f"$e{c + 1}", "to_terminal": 0})
+            ops.append({"op": "add_conductor", "folio": 0, "from": f"$e{c + 1}",
+                        "from_terminal": 1, "to": f"$e{c + 2}", "to_terminal": 0})
+        r = self.sb.edit(self.sb.new(), ops, out=f"{style}.qet")
+        self.assertTrue(r["ok"], r.get("hint"))
+        return r["output"]
+
+    def check(self, path, **kw):
+        r = m.tool_layout_check(BINARY, path, elements_dir=ELEMENTS, **kw)
+        self.assertTrue(r["ok"], r.get("hint"))
+        return r
+
+    def round_trip(self, style):
+        drawn = self.draw(style)
+        before_bytes = Path(drawn).read_bytes()
+        before = self.check(drawn)
+        self.assertEqual(Path(drawn).read_bytes(), before_bytes, "the check must not save")
+        self.assertEqual(before["style"], style)
+        self.assertEqual(before["summary"]["avoidable_bends"], 4)
+        self.assertEqual(before["summary"]["straight_wires"], 0)
+        fixed = self.sb.edit(drawn, before["fixes"], out=f"{style}-fixed.qet")
+        self.assertTrue(fixed["ok"], fixed.get("hint"))
+        after = self.check(fixed["output"])
+        self.assertEqual(after["score"], 100, after["findings"])
+        self.assertEqual(after["summary"]["straight_wires"], 4)
+        self.assertEqual(after["fixes"], [])
+
+    def test_iec_columns(self):
+        self.round_trip("iec")
+
+    def test_nfpa_rungs(self):
+        self.round_trip("nfpa")
+
+    def test_one_folio_only(self):
+        drawn = self.draw("iec")
+        self.assertEqual(self.check(drawn, folio=1)["summary"]["folios"], 1)
+        r = m.tool_layout_check(BINARY, drawn, folio=5, elements_dir=ELEMENTS)
+        self.assertFalse(r["ok"])
+
+
+@needs_elements
+class LayoutOpsIntegration(unittest.TestCase):
+    """The layout ops on a real QElectroTech. place_element and
+    align_terminal need terminalPosition(); on a build without it they are
+    skipped here, and the refusal itself is checked instead."""
+
+    def setUp(self):
+        self.sb = Sandbox()
+
+    def tearDown(self):
+        self.sb.close()
+
+    def placed(self, ops, out="out.qet"):
+        r = self.sb.edit(self.sb.new(), ops, out=out)
+        return r
+
+    def xy(self, path):
+        return {e["uuid"]: (float(e["x"]), float(e["y"])) for e in m.tool_elements(path)["elements"]}
+
+    def add(self, i, x, y, path=COIL):
+        return {"op": "add_element", "folio": 0, "path": path, "x": x, "y": y, "id": f"e{i}"}
+
+    def test_align_center(self):
+        r = self.placed([self.add(0, 100, 100), self.add(1, 137, 200), self.add(2, 90, 300),
+                         {"op": "align_elements", "folio": 0, "elements": ["$e0", "$e1", "$e2"],
+                          "edge": "center"}])
+        self.assertTrue(r["ok"], r.get("hint"))
+        self.assertEqual({x for x, _ in self.xy(r["output"]).values()}, {100.0})
+
+    def test_distribute_evenly_and_by_pitch(self):
+        r = self.placed([self.add(0, 100, 100), self.add(1, 130, 100), self.add(2, 300, 100),
+                         {"op": "distribute_elements", "folio": 0,
+                          "elements": ["$e0", "$e1", "$e2"], "axis": "horizontal"}])
+        self.assertTrue(r["ok"], r.get("hint"))
+        self.assertEqual(sorted(x for x, _ in self.xy(r["output"]).values()), [100, 200, 300])
+        r = self.placed([self.add(0, 100, 100), self.add(1, 100, 130),
+                         {"op": "distribute_elements", "folio": 0, "elements": ["$e0", "$e1"],
+                          "axis": "vertical", "pitch": 80}], out="pitch.qet")
+        self.assertTrue(r["ok"], r.get("hint"))
+        self.assertEqual(sorted(y for _, y in self.xy(r["output"]).values()), [100, 180])
+
+    def need_positions(self, r):
+        if "terminalPosition" in (r.get("missing_methods") or []):
+            self.assertFalse(r["ok"])
+            self.assertIn("terminalPosition", r["hint"])
+            self.skipTest("this build has no terminalPosition()")
+
+    def test_place_element_lines_up_the_terminals(self):
+        # borne_2's bottom terminal (index 2, local 0,10) over the contact's
+        # top one (index 0, local 0,-20): 40 px apart, dock to dock
+        r = self.placed([self.add(0, 100, 100, TERMINAL),
+                         {"op": "place_element", "folio": 0, "path": SLAVE, "terminal": 0,
+                          "next_to": "$e0", "next_to_terminal": 2, "id": "k"},
+                         {"op": "add_conductor", "folio": 0, "from": "$e0", "from_terminal": 2,
+                          "to": "$k", "to_terminal": 0}])
+        self.need_positions(r)
+        self.assertTrue(r["ok"], r.get("hint"))
+        placed = r["operations"][1]["result"]
+        self.assertEqual(self.xy(r["output"])[placed], (100.0, 100 + 10 + 40 + 20))
+        self.assertNotIn("note", r["operations"][1])
+
+    def test_place_element_turned_for_a_rung(self):
+        # NFPA: turned 270, the block's terminal 2 (its bottom one) faces
+        # east; the contact placed to its right, turned the same way, then
+        # meets it with terminal 0 (its top one), facing west
+        r = self.placed([self.add(0, 100, 100, TERMINAL),
+                         {"op": "rotate_element", "folio": 0, "element": "$e0", "angle": 270},
+                         {"op": "place_element", "folio": 0, "path": SLAVE, "terminal": 0,
+                          "next_to": "$e0", "next_to_terminal": 2, "angle": 270, "id": "k"}])
+        self.need_positions(r)
+        self.assertTrue(r["ok"], r.get("hint"))
+        self.assertNotIn("note", r["operations"][2], r["operations"][2])
+        x, y = self.xy(r["output"])[r["operations"][2]["result"]]
+        self.assertEqual(y, 100.0)
+
+    def test_place_element_warns_about_a_terminal_facing_away(self):
+        r = self.placed([self.add(0, 100, 100, TERMINAL),
+                         {"op": "place_element", "folio": 0, "path": SLAVE, "terminal": 0,
+                          "next_to": "$e0", "next_to_terminal": 1}])        # side terminal
+        self.need_positions(r)
+        self.assertTrue(r["ok"], r.get("hint"))
+        self.assertIn("faces n, not w", r["operations"][1]["note"])
+
+    def test_place_element_with_no_such_terminal_places_nothing(self):
+        r = self.placed([self.add(0, 100, 100, TERMINAL),
+                         {"op": "place_element", "folio": 0, "path": SLAVE, "terminal": 9,
+                          "next_to": "$e0", "next_to_terminal": 2}])
+        self.need_positions(r)
+        self.assertFalse(r["ok"])
+        self.assertEqual(len(self.xy(r["output"])), 1)
+
+    def test_align_terminal_moves_across_only(self):
+        r = self.placed([self.add(0, 100, 100, TERMINAL), self.add(1, 127, 200, SLAVE),
+                         {"op": "align_terminal", "folio": 0, "element": "$e1", "terminal": 0,
+                          "to": "$e0", "to_terminal": 2}])
+        self.need_positions(r)
+        self.assertTrue(r["ok"], r.get("hint"))
+        self.assertIn((100.0, 200.0), self.xy(r["output"]).values())
 
 
 @needs_binary
@@ -5415,6 +6297,27 @@ class UuidIndexLookups(unittest.TestCase):
 
 @needs_examples
 class CorpusIntegration(unittest.TestCase):
+    def test_a_reproducible_pdf_is_the_same_bytes_every_run(self):
+        """Two reproducible exports of one project, in separate runs, are
+        byte for byte the same; a plain one carries the time of the export.
+        741.qet has no cross-reference links, whose order is fixed apart."""
+        project = str(Path(EXAMPLES) / "741.qet")
+        with tempfile.TemporaryDirectory() as tmp:
+            outs = []
+            for i in range(2):
+                out = str(Path(tmp) / f"r{i}.pdf")
+                r = m.tool_export(BINARY, project, "pdf", out, reproducible=True,
+                                  source_date_epoch=1700000000)
+                self.assertTrue(r["ok"], r)
+                self.assertTrue(r["reproducible"], r)
+                outs.append(Path(out).read_bytes())
+            self.assertEqual(outs[0], outs[1])
+            plain = str(Path(tmp) / "plain.pdf")
+            r = m.tool_export(BINARY, project, "pdf", plain)
+            self.assertNotIn("reproducible", r)
+            self.assertNotIn(b"/CreationDate (D:20231114221320Z)",
+                             Path(plain).read_bytes())
+
     def test_folio_counts_match_what_qelectrotech_itself_holds(self):
         """Element and conductor counts per folio, from the file, against
         QElectroTech's own counts after loading it -- over every example.

@@ -1,4 +1,4 @@
-# Copyright 2006 The QElectroTech Team
+# Copyright 2006-2026 The QElectroTech Team
 # This file is part of QElectroTech.
 #
 # QElectroTech is free software: you can redistribute it and/or modify
@@ -179,6 +179,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/wiringlistexport.cpp
   ${QET_DIR}/sources/wirehops.h
   ${QET_DIR}/sources/wirehops.cpp
+  ${QET_DIR}/sources/wiringrules.h
+  ${QET_DIR}/sources/wiringrules.cpp
   ${QET_DIR}/sources/conductorrouter.h
   ${QET_DIR}/sources/conductorrouter.cpp
   ${QET_DIR}/sources/ui/wiringlistdialog.h
@@ -242,6 +244,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/genericpanel.h
   ${QET_DIR}/sources/itemgroups.cpp
   ${QET_DIR}/sources/itemgroups.h
+  ${QET_DIR}/sources/shownkinds.cpp
+  ${QET_DIR}/sources/shownkinds.h
   ${QET_DIR}/sources/lastusedstyle.cpp
   ${QET_DIR}/sources/lastusedstyle.h
   ${QET_DIR}/sources/machine_info.cpp
@@ -320,6 +324,18 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/autoNum/numerotationcontext.h
   ${QET_DIR}/sources/autoNum/renumberelementscommand.cpp
   ${QET_DIR}/sources/autoNum/renumberelementscommand.h
+  ${QET_DIR}/sources/autoNum/autonumschemecommand.cpp
+  ${QET_DIR}/sources/autoNum/autonumschemecommand.h
+  ${QET_DIR}/sources/autoNum/elementautonumschemecommand.cpp
+  ${QET_DIR}/sources/autoNum/elementautonumschemecommand.h
+  ${QET_DIR}/sources/autoNum/ui/counterwarning.cpp
+  ${QET_DIR}/sources/autoNum/ui/counterwarning.h
+  ${QET_DIR}/sources/autoNum/ui/pastenumberingimport.cpp
+  ${QET_DIR}/sources/autoNum/ui/pastenumberingimport.h
+  ${QET_DIR}/sources/autoNum/ui/renumberpreviewdialog.cpp
+  ${QET_DIR}/sources/autoNum/ui/renumberpreviewdialog.h
+  ${QET_DIR}/sources/undocommand/freezeelementlabelcommand.cpp
+  ${QET_DIR}/sources/undocommand/freezeelementlabelcommand.h
   ${QET_DIR}/sources/autoNum/ui/autonumberingdockwidget.cpp
   ${QET_DIR}/sources/autoNum/ui/autonumberingdockwidget.h
   ${QET_DIR}/sources/autoNum/ui/autonumberingmanagementw.cpp
@@ -598,6 +614,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/QetGraphicsItemModeler/qetgraphicshandleritem.h
   ${QET_DIR}/sources/QetGraphicsItemModeler/qetgraphicshandlerutility.cpp
   ${QET_DIR}/sources/QetGraphicsItemModeler/qetgraphicshandlerutility.h
+  ${QET_DIR}/sources/QetGraphicsItemModeler/textresizehandles.cpp
+  ${QET_DIR}/sources/QetGraphicsItemModeler/textresizehandles.h
 
   ${QET_DIR}/sources/QPropertyUndoCommand/qpropertyundocommand.cpp
   ${QET_DIR}/sources/QPropertyUndoCommand/qpropertyundocommand.h
@@ -795,6 +813,8 @@ set(QET_SRC_FILES
   ${QET_DIR}/sources/ui/importelementtextpatterndialog.h
   ${QET_DIR}/sources/ui/jumptoelementdialog.cpp
   ${QET_DIR}/sources/ui/jumptoelementdialog.h
+  ${QET_DIR}/sources/ui/wiringruleswarning.cpp
+  ${QET_DIR}/sources/ui/wiringruleswarning.h
   ${QET_DIR}/sources/ui/inditextpropertieswidget.cpp
   ${QET_DIR}/sources/ui/inditextpropertieswidget.h
   ${QET_DIR}/sources/ui/linksingleelementwidget.cpp

@@ -40,6 +40,20 @@ namespace QetSettings
 	bool scriptingForcedByEnvironment();
 	bool liveAssistantEnabled();
 	void setLiveAssistantEnabled(bool enabled);
+	bool liveSkipStartWarning();
+	void setLiveSkipStartWarning(bool skip);
+	bool liveAskFirst();
+	void setLiveAskFirst(bool ask);
+
+	/**
+		@brief Free-text drawing conventions for this installation (grid,
+		flow direction, routing, tagging, grouping, ...), written once by
+		the user and read by every AI assistant that connects -- live or
+		headless -- through qet-assistant.json and qet.houseStyle().
+		Empty when never set.
+	*/
+	QString houseStyle();
+	void setHouseStyle(const QString &text);
 
 	/**
 		@brief The sheet (folio) background the diagram editors draw.

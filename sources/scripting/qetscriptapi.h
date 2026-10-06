@@ -254,7 +254,18 @@ class QetGraphicsTableItem;
 	  which it does not, are left alone. Changing the project title is not
 	  undoable: the application sets it directly too.
 
-	  A folio's title block @b template is a seventh, separate case:
+	  A seventh, write-only field, "preset", sizes the frame for a sheet of
+	  paper: "a4-landscape", "tabloid-portrait" and so on (folioPresets()
+	  lists them). It picks the column and row counts and whole-number
+	  sizes that fill the sheet best without going over it, keeping each
+	  size as near the current one as it can, and pushes them as one
+	  ChangeBorderCommand. Whole numbers because the folio properties panel
+	  edits these sizes in whole pixels: a fraction would be rounded off the
+	  first time someone opened it. Two read-only fields, "width" and
+	  "height", are the frame and title block together in scene units --
+	  what an export draws -- so a caller can check the result.
+
+	  A folio's title block @b template is a separate case again:
 	  Diagram::setTitleBlockTemplate() resolves a name only against
 	  QETProject::embeddedTitleBlockTemplatesCollection() -- the same
 	  copy-into-the-project step addElement() already does for elements,
@@ -278,7 +289,12 @@ class QetGraphicsTableItem;
 	  is -- x, y (its origin), rotation, and the box it occupies on the folio
 	  (left, top, right, bottom) -- so a script can lay one thing out relative
 	  to another instead of only setting absolute coordinates, and can check
-	  that a move landed. insertFolio() puts a new folio at a position
+	  that a move landed. terminalPosition() is where a wire docks on one
+	  terminal and which way it leaves, so a symbol can be placed with a
+	  terminal exactly in line with another one before any wire exists;
+	  conductorPath() is a wire's drawn path by its uuid, for any wire,
+	  where conductorSegments() needs a terminal carrying only that one.
+	  insertFolio() puts a new folio at a position
 	  instead of at the end, which is what reordering is mostly for while
 	  moving an existing folio still needs the application's project view.
 	- @b Images: place a picture from a file. The pixels are copied into
@@ -368,7 +384,8 @@ class QetScriptApi : public QObject
 		Q_INVOKABLE bool exportDxf(const QString &outDir, bool showTerminals = false);
 		Q_INVOKABLE bool exportCables(const QString &output);
 		Q_INVOKABLE bool exportWires(const QString &output);
-		Q_INVOKABLE bool exportBom(const QString &output);
+		Q_INVOKABLE bool exportBom(const QString &output, bool noSlaves = false,
+								   bool noJunctions = false);
 		Q_INVOKABLE bool exportWiring(const QString &output);
 		Q_INVOKABLE bool exportNets(const QString &output);
 		Q_INVOKABLE bool exportLinks(const QString &output);
@@ -507,9 +524,15 @@ class QetScriptApi : public QObject
 		Q_INVOKABLE QStringList autoNums(const QString &kind) const;
 		Q_INVOKABLE bool addAutoNum(const QString &kind, const QString &name, const QStringList &parts);
 		Q_INVOKABLE bool removeAutoNum(const QString &kind, const QString &name);
+		Q_INVOKABLE bool renameAutoNum(const QString &kind, const QString &name, const QString &newName);
 		Q_INVOKABLE bool useConductorAutoNum(int folioIndex, const QString &name);
 		Q_INVOKABLE bool useElementAutoNum(const QString &name);
 		Q_INVOKABLE bool numberElement(int folioIndex, const QString &elementUuid);
+		Q_INVOKABLE int renumberElementAutoNum(const QString &name);
+		Q_INVOKABLE QVariantList freeElementNumbers(int folioIndex, const QString &elementUuid);
+		Q_INVOKABLE bool assignElementNumber(int folioIndex, const QString &elementUuid, int number);
+		Q_INVOKABLE bool assignElementAutoNum(const QString &name, int folioIndex,
+											  const QString &elementUuid, bool overwrite);
 
 		// -- images, embedded in the project --
 		Q_INVOKABLE QStringList images(int folioIndex) const;
@@ -517,6 +540,8 @@ class QetScriptApi : public QObject
 		Q_INVOKABLE int addImage(int folioIndex, const QString &filePath, double x, double y);
 		Q_INVOKABLE bool setImageScale(int folioIndex, int imageIndex, double factor);
 		Q_INVOKABLE bool setImageRotation(int folioIndex, int imageIndex, double angle);
+		Q_INVOKABLE bool cropImage(int folioIndex, int imageIndex, int x, int y, int width, int height);
+		Q_INVOKABLE QString imageCrop(int folioIndex, int imageIndex) const;
 		Q_INVOKABLE bool deleteImage(int folioIndex, int imageIndex);
 		Q_INVOKABLE int addPdfPage(int folioIndex, const QString &pdfPath, int pageNumber,
 								   int dpi, double x, double y);
@@ -534,6 +559,8 @@ class QetScriptApi : public QObject
 		Q_INVOKABLE QString elementTextProperty(int folioIndex, const QString &elementUuid,
 												int textIndex, const QString &property) const;
 		Q_INVOKABLE bool deleteElementText(int folioIndex, const QString &elementUuid, int textIndex);
+		Q_INVOKABLE QVariantMap elementTextGeometry(int folioIndex, const QString &elementUuid,
+													int textIndex) const;
 
 		// -- copy elements (with the conductors between them) to a position --
 		Q_INVOKABLE QStringList duplicateElements(int fromFolioIndex, const QStringList &elementUuids,
@@ -543,6 +570,12 @@ class QetScriptApi : public QObject
 		Q_INVOKABLE bool setProjectTitle(const QString &title);
 		Q_INVOKABLE QString folioBorder(int folioIndex, const QString &property) const;
 		Q_INVOKABLE bool setFolioBorder(int folioIndex, const QString &property, const QString &value);
+		Q_INVOKABLE QStringList folioPresets() const;
+
+		// -- this installation's drawing conventions (grid, flow, routing, tagging, --
+		// -- grouping, ...), free text, for every assistant that connects to read --
+		Q_INVOKABLE QString houseStyle() const;
+		Q_INVOKABLE bool setHouseStyle(const QString &text);
 
 		// -- the conductor defaults of a folio (Folio properties > Conductors),
 		//    or with folioIndex -1, the project's defaults for new folios --
@@ -555,6 +588,9 @@ class QetScriptApi : public QObject
 
 		// -- read an element's geometry --
 		Q_INVOKABLE QVariantMap elementGeometry(int folioIndex, const QString &elementUuid) const;
+		Q_INVOKABLE QVariantMap terminalPosition(int folioIndex, const QString &elementUuid,
+												 int terminalIndex) const;
+		Q_INVOKABLE QVariantList conductorPath(int folioIndex, const QString &conductorUuid) const;
 
 		// -- folios --
 		Q_INVOKABLE int addFolio();
