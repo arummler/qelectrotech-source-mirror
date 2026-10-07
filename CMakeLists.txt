@@ -35,11 +35,6 @@ project(qelectrotech
         HOMEPAGE_URL "https://qelectrotech.org/"
         LANGUAGES C CXX)
         
-configure_file(
-  "${CMAKE_CURRENT_SOURCE_DIR}/sources/qetversion.cpp.in"
-  "${CMAKE_CURRENT_BINARY_DIR}/generated/qetversion.cpp"
-  @ONLY
-)
 
 include(cmake/copyright_message.cmake)
 
@@ -175,7 +170,9 @@ if(WIN32)
         ${QM_FILES}
         ${QET_DIR}/qelectrotech.qrc
         ${QET_DIR}/ico/icon-themes.qrc
+        "${GENERATED_QETVERSION_CPP}"
     )
+    add_dependencies(${PROJECT_NAME} GenerateVersionFile)
     # Our own manifest (it declares longPathAware). MSVC merges a .manifest
     # listed as a source; MinGW needs it embedded through a resource file,
     # and ld then keeps it ahead of the toolchain's default manifest.
@@ -196,7 +193,9 @@ else()
         ${QM_FILES}
         ${QET_DIR}/qelectrotech.qrc
         ${QET_DIR}/ico/icon-themes.qrc
+        "${GENERATED_QETVERSION_CPP}"
     )
+    add_dependencies(${PROJECT_NAME} GenerateVersionFile)
 endif()
 
 if(QET_SPACEMOUSE_BACKEND_SPNAV_ENABLED)

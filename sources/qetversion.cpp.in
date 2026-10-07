@@ -49,6 +49,15 @@ namespace QetVersion
 
 		return str;
 	}
+	
+	/**
+	 * @brief gitCommitSha
+	 * Returns the Git commit hash collected at build time.
+	 */
+	QString gitCommitSha()
+	{
+		return QStringLiteral("@GIT_COMMIT_SHA@");
+	}
 
 	/**
 	 * @brief toXmlAttribute
