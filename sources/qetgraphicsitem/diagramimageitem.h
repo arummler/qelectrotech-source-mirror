@@ -50,9 +50,11 @@ class DiagramImageItem : public QetGraphicsItem {
 	Q_PROPERTY(QPointF pivot READ pivot WRITE setPivot NOTIFY transformChanged)
 	Q_PROPERTY(QString label READ label WRITE setLabel NOTIFY labelChanged)
 	// The picture's source -- original, crop rectangle, transparent
-	// colours -- as one value, so that every edit of it (crop, colour
-	// key, mirror, replace) is undone together with the displayed pixmap.
+	// colours -- as one value. The displayed pixmap is computed from it,
+	// so every edit of it (crop, colour key, mirror, replace) is one
+	// undo step on this property alone.
 	Q_PROPERTY(QVariant imageSource READ imageSourceVariant WRITE setImageSourceVariant)
+	Q_PROPERTY(bool adaptToDarkTheme READ adaptToDarkTheme WRITE setAdaptToDarkTheme NOTIFY adaptToDarkThemeChanged)
 	// A second, deliberately non-compensating property on the SAME
 	// underlying value -- setPivot() (above) intentionally adjusts
 	// pos() to keep the image visually in place, which is exactly
@@ -149,12 +151,15 @@ class DiagramImageItem : public QetGraphicsItem {
 	void setPivotRaw(const QPointF &pivot);
 	QString label() const { return m_label; }
 	void setLabel(const QString &label);
+	bool adaptToDarkTheme() const { return m_adapt_to_dark_theme; }
+	void setAdaptToDarkTheme(bool adapt);
 
 	signals:
 	void pixmapChanged();
 	void transformChanged();
 	void uuidChanged();
 	void labelChanged();
+	void adaptToDarkThemeChanged();
 
 	protected:
 	void paint(QPainter *, const QStyleOptionGraphicsItem *, QWidget *) override;
@@ -170,6 +175,7 @@ class DiagramImageItem : public QetGraphicsItem {
 	void mirror(bool horizontal);
 	void setTransparentColor();
 	void crop();
+	void pushImageSourceChange(const QString &text, const ImageSource &oldSource, const ImageSource &newSource);
 	void restoreAspectRatio();
 	void saveImageAs();
 	void saveOriginalImageAs();
@@ -258,6 +264,7 @@ class DiagramImageItem : public QetGraphicsItem {
 	// Empty by default, and then neither saved nor painted, so a picture
 	// without one costs exactly what it did before.
 	QString m_label;
+	bool m_adapt_to_dark_theme = false;
 	QFont m_label_font;
 	QSizeF m_label_size;   // in scene units, measured once in setLabel()
 	QPointF m_label_scale{1.0, 1.0};   // scale the label rect was last computed for -- see updateLabelScale()

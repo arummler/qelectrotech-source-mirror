@@ -398,6 +398,8 @@ class QetScriptApi : public QObject
 		Q_INVOKABLE bool setElementPosition(int folioIndex, const QString &elementUuid, double x, double y);
 		Q_INVOKABLE bool moveElement(int folioIndex, const QString &elementUuid, double dx, double dy);
 		Q_INVOKABLE bool rotateElement(int folioIndex, const QString &elementUuid, double angle);
+		Q_INVOKABLE bool mirrorElement(int folioIndex, const QString &elementUuid, bool vertical = false);
+		Q_INVOKABLE QString elementMirror(int folioIndex, const QString &elementUuid) const;
 		Q_INVOKABLE bool deleteElement(int folioIndex, const QString &elementUuid);
 
 		// -- address what is already there --
@@ -541,7 +543,7 @@ class QetScriptApi : public QObject
 		Q_INVOKABLE bool setImageScale(int folioIndex, int imageIndex, double factor);
 		Q_INVOKABLE bool setImageRotation(int folioIndex, int imageIndex, double angle);
 		Q_INVOKABLE bool cropImage(int folioIndex, int imageIndex, int x, int y, int width, int height);
-		Q_INVOKABLE QString imageCrop(int folioIndex, int imageIndex) const;
+		Q_INVOKABLE QVariantMap imageCrop(int folioIndex, int imageIndex) const;
 		Q_INVOKABLE bool deleteImage(int folioIndex, int imageIndex);
 		Q_INVOKABLE int addPdfPage(int folioIndex, const QString &pdfPath, int pageNumber,
 								   int dpi, double x, double y);

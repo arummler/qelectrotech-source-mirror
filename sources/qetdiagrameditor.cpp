@@ -27,9 +27,11 @@
 #endif
 #include <QCoreApplication>
 #include <QToolButton>
+#include <QWidgetAction>
 #include "ElementsCollection/elementscollectionwidget.h"
 #include "ElementsCollection/elementpickerpopup.h"
 #include "shortcutbarsettings.h"
+#include "diagramtoolbarsettings.h"
 #include "qetgraphicsitem/conductor.h"
 #include "itemgroups.h"
 #include "commandsearchpopup.h"
@@ -76,6 +78,7 @@
 #include "utils/qetutils.h"
 #include "undocommand/groupitemscommand.h"
 #include "undocommand/alignselectioncommand.h"
+#include "undocommand/mirrorselectioncommand.h"
 #include "undocommand/rotateselectioncommand.h"
 #include "undocommand/rotatetextscommand.h"
 #include "diagram.h"
@@ -85,6 +88,7 @@
 #include "wiringlistexport.h"
 #include "ui/wiringlistdialog.h"
 #include "ui/terminalnumberingdialog.h"
+#include "toolbarsettings.h"
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
@@ -186,6 +190,7 @@ QETDiagramEditor::QETDiagramEditor(const QStringList &files, QWidget *parent) :
 	readSettings();  // restoreGeometry before show()
 	show();
 	readSettingsState();  // restoreState() must be called after show() in Qt6
+	ToolbarSettings::applyTo(this);
 #ifdef QET_HAS_SCRIPTING
 	setUpLiveIndicator();
 	setUpMacroRecorder();
@@ -978,6 +983,8 @@ void QETDiagramEditor::setUpActions()
 	m_rotate_selection     = m_selection_actions_group.addAction( QET::Icons::TransformRotate,   tr("Pivoter")                   );
 	m_rotate_group_selection = m_selection_actions_group.addAction( QET::Icons::TransformRotate, tr("Pivoter le groupe")         );
 	m_rotate_texts         = m_selection_actions_group.addAction( QET::Icons::ObjectRotateRight, tr("Orienter les textes")       );
+	m_mirror_horizontal    = m_selection_actions_group.addAction( QET::Icons::ImageFlipHorizontal, tr("Miroir horizontal")       );
+	m_mirror_vertical      = m_selection_actions_group.addAction( QET::Icons::ImageFlipVertical,   tr("Miroir vertical")         );
 	m_find_element         = m_selection_actions_group.addAction( QET::Icons::ZoomDraw,          tr("Retrouver dans le panel")   );
 	m_edit_selection       = m_selection_actions_group.addAction( QET::Icons::ElementEdit,       tr("Éditer l'item sélectionné") );
 	m_group_selected_texts = m_selection_actions_group.addAction( QET::Icons::textGroup,         tr("Grouper les textes sélectionnés"));
@@ -988,6 +995,9 @@ void QETDiagramEditor::setUpActions()
 	ShortcutManager::instance().registerAction(m_rotate_selection, "diagrameditor.rotate_selection", tr("Éditeur de schémas"), Qt::Key_Space);
 	ShortcutManager::instance().registerAction(m_rotate_group_selection, "diagrameditor.rotate_group_selection", tr("Éditeur de schémas"), Qt::SHIFT | Qt::Key_Space);
 	ShortcutManager::instance().registerAction(m_rotate_texts, "diagrameditor.rotate_texts", tr("Éditeur de schémas"), Qt::CTRL | Qt::Key_Space);
+		//M and F, the keys of the same two actions in the element editor
+	ShortcutManager::instance().registerAction(m_mirror_horizontal, "diagrameditor.mirror_horizontal", tr("Éditeur de schémas"), Qt::Key_M);
+	ShortcutManager::instance().registerAction(m_mirror_vertical, "diagrameditor.mirror_vertical", tr("Éditeur de schémas"), Qt::Key_F);
 	ShortcutManager::instance().registerAction(m_find_element, "diagrameditor.find_element", tr("Éditeur de schémas"), QKeySequence());
 	ShortcutManager::instance().registerAction(m_group_selected_texts, "diagrameditor.group_selected_texts", tr("Éditeur de schémas"), QKeySequence());
 	ShortcutManager::instance().registerAction(m_edit_selection, "diagrameditor.edit_selection", tr("Éditeur de schémas"), Qt::CTRL | Qt::Key_E);
@@ -1081,12 +1091,16 @@ void QETDiagramEditor::setUpActions()
 	m_rotate_selection->setStatusTip( tr("Pivote les éléments et textes sélectionnés", "status bar tip"));
 	m_rotate_group_selection->setStatusTip( tr("Pivote la sélection comme un groupe autour de son centre, au lieu de chaque élément sur place", "status bar tip"));
 	m_rotate_texts    ->setStatusTip( tr("Pivote les textes sélectionnés à un angle précis", "status bar tip"));
+	m_mirror_horizontal->setStatusTip( tr("Retourne les éléments sélectionnés de gauche à droite", "status bar tip"));
+	m_mirror_vertical ->setStatusTip( tr("Retourne les éléments sélectionnés de haut en bas", "status bar tip"));
 	m_find_element    ->setStatusTip( tr("Retrouve l'élément sélectionné dans le panel", "status bar tip"));
 
 	m_delete_selection    ->setData("delete_selection");
 	m_rotate_selection    ->setData("rotate_selection");
 	m_rotate_group_selection->setData("rotate_group_selection");
 	m_rotate_texts        ->setData("rotate_selected_text");
+	m_mirror_horizontal   ->setData("mirror_horizontal");
+	m_mirror_vertical     ->setData("mirror_vertical");
 	m_find_element        ->setData("find_selected_element");
 	m_edit_selection      ->setData("edit_selected_element");
 	m_group_selected_texts->setData("group_selected_texts");
@@ -1314,56 +1328,36 @@ void QETDiagramEditor::setUpToolBar()
 	diagram_tool_bar = new QToolBar(tr("Schéma"), this);
 	diagram_tool_bar -> setObjectName("diagram");
 
-	main_tool_bar -> addActions(m_file_actions_group.actions());
-	main_tool_bar -> addAction(m_print);
-	main_tool_bar -> addAction(m_export_to_pdf);
-	main_tool_bar -> addSeparator();
-	main_tool_bar -> addAction(undo);
-	main_tool_bar -> addAction(redo);
-	main_tool_bar -> addSeparator();
-	main_tool_bar -> addAction(m_cut);
-	main_tool_bar -> addAction(m_copy);
-	main_tool_bar -> addAction(m_paste);
-	main_tool_bar -> addAction(m_duplicate);
-	main_tool_bar -> addSeparator();
-	main_tool_bar -> addAction(m_delete_selection);
-	main_tool_bar -> addAction(m_rotate_selection);
-
-	// Modes selection / visualisation et zoom
-	view_tool_bar -> addAction(m_mode_selection);
-	view_tool_bar -> addAction(m_mode_visualise);
-	view_tool_bar -> addSeparator();
-	view_tool_bar -> addWidget(new DiagramEditorHandlerSizeWidget(this));
-	view_tool_bar -> addSeparator();
-	view_tool_bar -> addAction(m_draw_grid);
-	view_tool_bar -> addWidget(m_text_grid_button);
-	view_tool_bar -> addAction(m_draw_guides);
-	view_tool_bar -> addWidget(m_background_color_button);
-	view_tool_bar -> addSeparator();
-	view_tool_bar -> addActions(m_zoom_action_toolBar);
-
-	diagram_tool_bar -> addAction (m_edit_diagram_properties);
-	diagram_tool_bar -> addAction (m_conductor_reset);
-	diagram_tool_bar -> addAction (m_auto_conductor);
-	diagram_tool_bar -> addAction (m_auto_break_conductor);
-		//Sits with the conductor actions it works alongside: it colours
-		//the selected conductors and sets the colour of the next one drawn.
-	m_conductor_color_button = new ConductorColorToolButton(this, this);
-	diagram_tool_bar -> addWidget (m_conductor_color_button);
-
 	m_add_item_tool_bar = new QToolBar(tr("Ajouter"), this);
 	m_add_item_tool_bar->setObjectName("adding");
-	m_add_item_tool_bar->addActions(m_add_item_actions_group.actions());
 
 	m_depth_tool_bar = new QToolBar(tr("Profondeur", "toolbar title"));
 	m_depth_tool_bar->setObjectName("diagram_depth_toolbar");
-	m_depth_tool_bar->addActions(m_depth_action_group->actions());
+
+		//The toolbar buttons that are widgets, not commands. Each is held by
+		//an action of this window, so it survives being taken off a toolbar.
+	auto add_widget = [this](const QString &id, QWidget *widget) {
+		auto *action = new QWidgetAction(this);
+		action->setDefaultWidget(widget);
+		action->setText(DiagramToolbarSettings::widgetTitle(id));
+		m_toolbar_widgets.insert(id, action);
+	};
+	add_widget(QStringLiteral("widget:handler_size"), new DiagramEditorHandlerSizeWidget(this));
+	add_widget(QStringLiteral("widget:text_grid"), m_text_grid_button);
+	add_widget(QStringLiteral("widget:background_color"), m_background_color_button);
+		//Sits with the conductor actions it works alongside: it colours
+		//the selected conductors and sets the colour of the next one drawn.
+	m_conductor_color_button = new ConductorColorToolButton(this, this);
+	add_widget(QStringLiteral("widget:conductor_color"), m_conductor_color_button);
 
 	addToolBar(Qt::TopToolBarArea, main_tool_bar);
 	addToolBar(Qt::TopToolBarArea, view_tool_bar);
 	addToolBar(Qt::TopToolBarArea, diagram_tool_bar);
 	addToolBar(Qt::TopToolBarArea, m_add_item_tool_bar);
 	addToolBar(Qt::TopToolBarArea, m_depth_tool_bar);
+
+	DiagramToolbarSettings::markWindow(this);
+	rebuildToolBars();
 
 	m_scripts_tool_bar = new QToolBar(tr("Scripts", "toolbar title"), this);
 	m_scripts_tool_bar->setObjectName("scripts");
@@ -1372,6 +1366,59 @@ void QETDiagramEditor::setUpToolBar()
 	m_scripts_tool_bar->toggleViewAction()->setVisible(false);
 	m_scripts_tool_bar->hide();
 #endif
+}
+
+/**
+	@brief QETDiagramEditor::rebuildToolBars
+	Fill every toolbar from DiagramToolbarSettings, adding the user's own
+	toolbars that this window does not have yet and removing those that
+	were deleted. Called when the window is built, when the settings
+	change, and when the stored scripts change (a script can be on any
+	toolbar).
+*/
+void QETDiagramEditor::rebuildToolBars()
+{
+	const QList<DiagramToolbarSettings::Toolbar> custom = DiagramToolbarSettings::customToolbars();
+	QStringList custom_names;
+	for (const DiagramToolbarSettings::Toolbar &toolbar : custom) {
+		custom_names << toolbar.name;
+	}
+	for (QToolBar *toolbar : m_custom_tool_bars) {
+		if (!custom_names.contains(toolbar->objectName())) {
+			removeToolBar(toolbar);
+			toolbar->deleteLater();
+		}
+	}
+	m_custom_tool_bars.erase(std::remove_if(m_custom_tool_bars.begin(), m_custom_tool_bars.end(),
+		[&custom_names](QToolBar *toolbar) { return !custom_names.contains(toolbar->objectName()); }),
+		m_custom_tool_bars.end());
+
+	for (const DiagramToolbarSettings::Toolbar &toolbar : custom)
+	{
+		auto existing = std::find_if(m_custom_tool_bars.cbegin(), m_custom_tool_bars.cend(),
+			[&toolbar](QToolBar *t) { return t->objectName() == toolbar.name; });
+		if (existing != m_custom_tool_bars.cend()) {
+			(*existing)->setWindowTitle(toolbar.title);
+			continue;
+		}
+		auto *new_tool_bar = new QToolBar(toolbar.title, this);
+		new_tool_bar->setObjectName(toolbar.name);
+		new_tool_bar->setMovable(!ToolbarSettings::locked());
+		addToolBar(Qt::TopToolBarArea, new_tool_bar);
+		m_custom_tool_bars << new_tool_bar;
+	}
+
+	auto resolve = [this](const QString &id) -> QAction * {
+		if (DiagramToolbarSettings::isWidget(id)) {
+			return m_toolbar_widgets.value(id);
+		}
+		return ShortcutManager::instance().action(id, this);
+	};
+	const QList<QToolBar *> built_in {main_tool_bar, view_tool_bar, diagram_tool_bar,
+					   m_add_item_tool_bar, m_depth_tool_bar};
+	for (QToolBar *toolbar : built_in + m_custom_tool_bars) {
+		DiagramToolbarSettings::fill(toolbar, DiagramToolbarSettings::ids(toolbar->objectName()), resolve);
+	}
 }
 
 /**
@@ -1428,12 +1475,9 @@ void QETDiagramEditor::setUpMenu()
 	menu_edition -> addAction(m_paste_origin);
 	menu_edition -> addAction(m_duplicate);
 	menu_edition -> addAction(m_configure_duplicate);
+	menu_edition -> addSeparator();
 	menu_edition -> addAction(m_insert_last_element);
 	menu_edition -> addAction(m_show_element_picker);
-	menu_edition -> addAction(m_show_shortcut_bar);
-	menu_edition -> addAction(m_repeat_last_command);
-	menu_edition -> addAction(m_command_search);
-	menu_edition -> addSeparator();
 		//The same actions the "Ajouter" toolbar holds. They were toolbar-only,
 		//which left them unreachable for anyone working without a mouse: a
 		//toolbar button has no key, so text fields, images and every drawing
@@ -1443,9 +1487,24 @@ void QETDiagramEditor::setUpMenu()
 	m_add_item_menu -> setIcon(QET::Icons::Add);
 	m_add_item_menu -> addActions(m_add_item_actions_group.actions());
 	menu_edition -> addSeparator();
-	menu_edition -> addActions(m_select_actions_group.actions());
+		//The menu had grown to over forty entries and no longer fitted on a
+		//laptop screen (issue #1336). Whole families now sit one level down,
+		//as Ajouter and Aligner already did; every action and its shortcut
+		//is unchanged.
+	QMenu *select_menu = menu_edition -> addMenu(QET::Icons::EditSelectAll, tr("Sélection"));
+	select_menu -> addActions(m_select_actions_group.actions());
 	menu_edition -> addSeparator();
-	menu_edition -> addActions(m_selection_actions_group.actions());
+	menu_edition -> addAction(m_delete_selection);
+	menu_edition -> addAction(m_rotate_selection);
+	menu_edition -> addAction(m_rotate_group_selection);
+	menu_edition -> addAction(m_rotate_texts);
+	menu_edition -> addAction(m_find_element);
+	menu_edition -> addAction(m_edit_selection);
+	QMenu *group_menu = menu_edition -> addMenu(QET::Icons::textGroup, tr("Grouper"));
+	group_menu -> addAction(m_group_selection);
+	group_menu -> addAction(m_ungroup_selection);
+	group_menu -> addSeparator();
+	group_menu -> addAction(m_group_selected_texts);
 	m_align_menu = menu_edition -> addMenu(tr("Aligner"));
 		//Snap to grid, then the horizontal three, then the vertical three,
 		//in the order setUpActions() adds them
@@ -1458,18 +1517,20 @@ void QETDiagramEditor::setUpMenu()
 	menu_edition -> addAction(m_conductor_reset);
 	menu_edition -> addSeparator();
 	menu_edition -> addAction(m_edit_diagram_properties);
-	menu_edition -> addActions(m_row_column_actions_group.actions());
-		//Not added to a menu here: it exists so the folio's context menu can
-		//hold the row and column actions one level down (see
+		//Shared with the folio's context menu (see
 		//DiagramView::contextMenuActions()).
-	m_row_column_menu = new QMenu(tr("Lignes et colonnes"), this);
+	m_row_column_menu = menu_edition -> addMenu(tr("Lignes et colonnes"));
 	m_row_column_menu -> setIcon(QET::Icons::EditTableInsertColumnRight);
 	m_row_column_menu -> addActions(m_row_column_actions_group.actions());
-	menu_edition -> addSeparator();
-	menu_edition -> addActions(m_depth_action_group->actions());
+	QMenu *depth_menu = menu_edition -> addMenu(QET::Icons::BringForward, tr("Profondeur"));
+	depth_menu -> addActions(m_depth_action_group->actions());
 	menu_edition -> addSeparator();
 	menu_edition -> addAction(m_find);
 	menu_edition -> addAction(m_jump_to_element);
+	menu_edition -> addAction(m_command_search);
+	menu_edition -> addSeparator();
+	menu_edition -> addAction(m_show_shortcut_bar);
+	menu_edition -> addAction(m_repeat_last_command);
 
 	// menu Projet
 	menu_project -> addAction(m_project_edit_properties);
@@ -2333,6 +2394,16 @@ void QETDiagramEditor::selectionGroupTriggered(QAction *action)
 		if(c->isValid())
 			diagram->undoStack().push(c);
 	}
+	else if (value == "mirror_horizontal" || value == "mirror_vertical")
+	{
+		auto *c = new MirrorSelectionCommand(
+					diagram,
+					value == "mirror_horizontal" ? Qt::Horizontal : Qt::Vertical);
+		if (c->isValid())
+			diagram->undoStack().push(c);
+		else
+			delete c;
+	}
 	else if (value == "rotate_group_selection")
 	{
 		RotateSelectionCommand *c = new RotateSelectionCommand(diagram, 90, nullptr, true);
@@ -2570,6 +2641,8 @@ void QETDiagramEditor::slot_updateComplexActions()
 			    << m_delete_selection
 			    << m_rotate_selection
 			    << m_rotate_group_selection
+			    << m_mirror_horizontal
+			    << m_mirror_vertical
 			    << m_edit_selection
 			    << m_group_selected_texts
 			    << m_group_selection
@@ -2593,6 +2666,8 @@ void QETDiagramEditor::slot_updateComplexActions()
 	// number of selected elements
 	int selected_elements_count = dc.count(DiagramContent::Elements);
 	m_find_element->setEnabled(selected_elements_count == 1);
+	m_mirror_horizontal->setEnabled(!ro && selected_elements_count);
+	m_mirror_vertical->setEnabled(!ro && selected_elements_count);
 
 	//Actions that need items (elements, conductors, texts...) selected, to be enabled
 	bool copiable_items  = dc.hasCopiableItems();
@@ -4023,6 +4098,7 @@ void QETDiagramEditor::rebuildScriptActions()
 	if (has_scripts != m_had_scripts) m_scripts_tool_bar->setVisible(has_scripts);
 	m_had_scripts = has_scripts;
 
+	rebuildToolBars();
 	updateScriptActions();
 }
 

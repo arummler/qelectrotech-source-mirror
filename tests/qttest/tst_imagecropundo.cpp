@@ -25,6 +25,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QSize>
 #include <QTemporaryDir>
 
 /**
@@ -77,6 +78,23 @@ class tst_imagecropundo : public QObject
 		QFile f(path);
 		return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
 	}
+	// The size of the picture as shown, from the <image> element's own
+	// text (its first text node: a cropped picture carries <image_base>
+	// as a child too).
+	static QSize shownSize(const QByteArray &xml)
+	{
+		const QRegularExpression image(QStringLiteral("<image\\b[^>]*>\\s*([A-Za-z0-9+/=]+)"));
+		const QRegularExpressionMatch m = image.match(QString::fromUtf8(xml));
+		if (!m.hasMatch()) return {};
+		return QImage::fromData(QByteArray::fromBase64(m.captured(1).toLatin1())).size();
+	}
+	// qet.imageCrop()'s {x, y, width, height}, as logged by the script.
+	static QRect rect(const QJsonValue &crop)
+	{
+		const QJsonObject o = crop.toObject();
+		return QRect(o.value("x").toInt(-1), o.value("y").toInt(-1),
+					 o.value("width").toInt(-1), o.value("height").toInt(-1));
+	}
 
 private slots:
 	void initTestCase()
@@ -111,20 +129,23 @@ qet.log('PROBE ' + JSON.stringify(r));
 
 		const QJsonObject r = run(script, QStringLiteral(QET_EXAMPLES_DIR "/741.qet"));
 		QVERIFY2(!r.isEmpty(), "the script logged nothing");
-		QCOMPARE(r.value("full").toString(), QStringLiteral("0,0,40,30"));
+		QCOMPARE(rect(r.value("full")), QRect(0, 0, 40, 30));
 		QVERIFY(r.value("cropped_ok").toBool());
-		QCOMPARE(r.value("cropped").toString(), QStringLiteral("10,5,20,10"));
+		QCOMPARE(rect(r.value("cropped")), QRect(10, 5, 20, 10));
 		// Crops that change nothing report it, and push no undo step:
 		// the undo below still undoes the real crop.
 		QCOMPARE(r.value("same_ok").toBool(true), false);
 		QCOMPARE(r.value("empty_ok").toBool(true), false);
 		QCOMPARE(r.value("outside_ok").toBool(true), false);
-		QCOMPARE(r.value("undone").toString(), QStringLiteral("0,0,40,30"));
-		QCOMPARE(r.value("redone").toString(), QStringLiteral("10,5,20,10"));
+		QCOMPARE(rect(r.value("undone")), QRect(0, 0, 40, 30));
+		QCOMPARE(rect(r.value("redone")), QRect(10, 5, 20, 10));
 
 		const QByteArray undone_xml = read(undone);
 		QVERIFY(undone_xml.contains("<image "));
 		QVERIFY2(!undone_xml.contains("<crop "), "an undone crop was saved");
+		// The picture shown follows: whole after undo, the kept region after redo.
+		QCOMPARE(shownSize(undone_xml), QSize(40, 30));
+		QCOMPARE(shownSize(read(redone)), QSize(20, 10));
 		const QRegularExpressionMatch crop =
 				QRegularExpression(QStringLiteral("<crop ([^>]*)/>")).match(QString::fromUtf8(read(redone)));
 		QVERIFY2(crop.hasMatch(), "the redone crop was not saved");

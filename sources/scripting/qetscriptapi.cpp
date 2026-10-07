@@ -61,6 +61,7 @@
 #include "../qetgraphicsitem/dynamicelementtextitem.h"
 #include "../qetgraphicsitem/independenttextitem.h"
 #include "../qetgraphicsitem/qetshapeitem.h"
+#include "../undocommand/mirrorselectioncommand.h"
 #include "../undocommand/promoteshapecommand.h"
 #include "../TerminalStrip/UndoCommand/addterminalstripcommand.h"
 #include "../TerminalStrip/UndoCommand/addterminaltostripcommand.h"
@@ -831,6 +832,43 @@ bool QetScriptApi::rotateElement(int folioIndex, const QString &elementUuid, dou
 	cmd->setText(QObject::tr("Pivoter %1").arg(element->name()));
 	m_project->undoStack()->push(cmd);
 	return true;
+}
+
+/**
+	@brief QetScriptApi::mirrorElement
+	Mirror an element in place, as "Miroir horizontal" (left and right
+	swap) or, with @p vertical, "Miroir vertical" (top and bottom swap)
+	do on a selection. Mirroring twice the same way puts it back.
+	@return false if the element is not found or the project is read only
+*/
+bool QetScriptApi::mirrorElement(int folioIndex, const QString &elementUuid, bool vertical)
+{
+	if (m_project && m_project->isReadOnly()) {
+		log(QStringLiteral("qet.mirrorElement: project is read-only"));
+		return false;
+	}
+	Element *element = findElement(folioIndex, elementUuid);
+	if (!element) return false;
+
+	m_project->undoStack()->push(new MirrorSelectionCommand(
+		{element}, vertical ? Qt::Vertical : Qt::Horizontal));
+	return true;
+}
+
+/**
+	@brief QetScriptApi::elementMirror
+	@return the mirrors of the element about its own axes, as saved in the
+	project (Element::setMirror()): "horizontal", "vertical", "both", or ""
+	if it is not mirrored or not found. On a turned element, a horizontal
+	mirror of the folio is a vertical mirror of the element.
+*/
+QString QetScriptApi::elementMirror(int folioIndex, const QString &elementUuid) const
+{
+	const Element *element = findElement(folioIndex, elementUuid);
+	if (!element || !element->isMirrored()) return QString();
+	if (!element->hasVerticalMirror()) return QStringLiteral("horizontal");
+	if (!element->hasHorizontalMirror()) return QStringLiteral("vertical");
+	return QStringLiteral("both");
 }
 
 QStringList QetScriptApi::elementUuids(int folioIndex) const
@@ -3503,14 +3541,20 @@ bool QetScriptApi::cropImage(int folioIndex, int imageIndex, int x, int y, int w
 /**
 	@brief QetScriptApi::imageCrop
 	@return the image's crop rectangle in its original's pixels, as
-	"x,y,width,height", or an empty string for no such image.
+	{x, y, width, height} like elementGeometry(), or an empty map for no
+	such image.
 */
-QString QetScriptApi::imageCrop(int folioIndex, int imageIndex) const
+QVariantMap QetScriptApi::imageCrop(int folioIndex, int imageIndex) const
 {
+	QVariantMap crop;
 	const QList<DiagramImageItem *> list = sortedImages(folioIndex);
-	if (imageIndex < 0 || imageIndex >= list.count()) return QString();
+	if (imageIndex < 0 || imageIndex >= list.count()) return crop;
 	const QRect r = list.at(imageIndex)->cropRect();
-	return QStringLiteral("%1,%2,%3,%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
+	crop.insert(QStringLiteral("x"), r.x());
+	crop.insert(QStringLiteral("y"), r.y());
+	crop.insert(QStringLiteral("width"), r.width());
+	crop.insert(QStringLiteral("height"), r.height());
+	return crop;
 }
 
 bool QetScriptApi::deleteImage(int folioIndex, int imageIndex)

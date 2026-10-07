@@ -118,13 +118,20 @@ Qet::Orientation Terminal::orientation() const
 		// orientations actuelle et par defaut de l'element
 		// current and default element orientations
 		int ori_cur = elt -> orientation();
-	if (ori_cur == 0) return(d->m_orientation);
+		// The mirrors of an element are about its own axes, before it is
+		// rotated (Element::setMirror()): a horizontal one swaps east and
+		// west, a vertical one north and south
+		Qet::Orientation ori_elmt = d->m_orientation;
+		if (Qet::isHorizontal(ori_elmt) ? elt -> hasHorizontalMirror()
+										: elt -> hasVerticalMirror())
+			ori_elmt = (Qet::Orientation)((ori_elmt + 2) % 4);
+	if (ori_cur == 0) return(ori_elmt);
 		else {
 			// calcul l'angle de rotation implique par l'orientation de l'element parent
 			// angle de rotation de la borne sur la scene, divise par 90
 			// calculates the angle of rotation implied by the orientation of the parent
 			// element angle of rotation of the terminal on the scene, divided by 90
-			int angle = ori_cur + d->m_orientation;
+			int angle = ori_cur + ori_elmt;
 			while (angle >= 4) angle -= 4;
 			return((Qet::Orientation)angle);
 		}
@@ -299,6 +306,25 @@ void Terminal::paint(
 		QFontMetrics fm(d->m_label_font);
 		QSizeF text_size = fm.size(Qt::TextSingleLine, display_name);
 
+			// When the element mirrors its symbol, or turns it in a project
+			// that keeps symbol texts horizontal, undo that on the name
+			// about the centre of its box, in the frame it is drawn in
+			// (turned by label_rotation): its box stays where the element
+			// puts it, but it reads as in the symbol (Element::keepReadable())
+		const Element *element = qgraphicsitem_cast<Element *>(parentItem());
+		const QTransform texts_transform = element ? element->symbolTextsTransform()
+												   : QTransform();
+		auto keep_readable = [painter, &texts_transform](const QRectF &rect, qreal label_rotation) {
+			if (texts_transform.isIdentity()) return;
+			const QTransform undo = QTransform().rotate(label_rotation)
+									* texts_transform.inverted()
+									* QTransform().rotate(-label_rotation);
+			const QPointF c = rect.center();
+			painter->setTransform(QTransform::fromTranslate(-c.x(), -c.y())
+								  * undo
+								  * QTransform::fromTranslate(c.x(), c.y()), true);
+		};
+
 		if (!qFuzzyIsNull(d->m_label_rotation)) {
 			painter->save();
 			painter->translate(label_pos);
@@ -314,6 +340,7 @@ void Terminal::paint(
 			else if (d->m_label_valignment & Qt::AlignBottom) ry = -text_size.height();
 
 			QRectF text_rect(QPointF(rx, ry), text_size);
+			keep_readable(text_rect, d->m_label_rotation);
 			painter->drawText(text_rect, static_cast<int>(d->m_label_halignment | d->m_label_valignment), display_name);
 			painter->restore();
 		} else {
@@ -327,6 +354,7 @@ void Terminal::paint(
 			else if (d->m_label_valignment & Qt::AlignBottom) dy = -text_size.height();
 
 			QRectF text_rect(label_pos + QPointF(dx, dy), text_size);
+			keep_readable(text_rect, 0);
 			if (d->m_label_frame) {
 				painter->drawRect(text_rect.adjusted(-1, -1, 1, 1));
 			}
