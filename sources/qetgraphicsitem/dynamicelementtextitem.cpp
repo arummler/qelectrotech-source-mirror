@@ -35,6 +35,42 @@
 #include <QtCore/qnumeric.h>
 #include <QGraphicsSceneMouseEvent>
 #include <QAbstractTextDocumentLayout>
+#include <QApplication>
+#include <QClipboard>
+#include <QKeyEvent>
+#include <QKeySequence>
+#include <QMimeData>
+#include <QTextCursor>
+#include <QTextDocumentFragment>
+
+void DynamicElementTextItem::keyPressEvent(QKeyEvent *event)
+{
+	if (!event->matches(QKeySequence::Paste) || m_text_from != UserText ||
+	    !(textInteractionFlags() & Qt::TextEditable)) {
+		DiagramTextItem::keyPressEvent(event);
+		return;
+	}
+	if (diagram() && diagram()->isReadOnly()) {
+		event->accept();
+		return;
+	}
+	const QMimeData *mime = QApplication::clipboard()->mimeData();
+	if (mime && (mime->hasText() || mime->hasHtml())) {
+		const QString text = mime->hasText() ? mime->text() :
+		    QTextDocumentFragment::fromHtml(mime->html()).toPlainText();
+		prepareAlignment();
+		QTextCursor cursor = textCursor();
+		cursor.beginEditBlock();
+		// An empty character format inherits the field's default font,
+		// rather than the clipboard's font or the preceding character's.
+		cursor.insertText(text, QTextCharFormat());
+		cursor.setCharFormat(QTextCharFormat());
+		cursor.endEditBlock();
+		setTextCursor(cursor);
+		finishAlignment();
+	}
+	event->accept();
+}
 
 /**
 	@brief DynamicElementTextItem::DynamicElementTextItem
@@ -47,7 +83,7 @@ DynamicElementTextItem::DynamicElementTextItem(Element *parent_element) :
 {
 	ShownKinds::tag(this, ShownKinds::SymbolTexts);
 	setFont(QETApp::dynamicTextsItemFont());
-	setText(tr("Texte"));
+	setText(tr("Text"));
 	setParentItem(parent_element);
 	QSettings settings;
 	setRotation(settings.value("dynamic_text_rotation", 0).toInt());
@@ -58,7 +94,7 @@ DynamicElementTextItem::DynamicElementTextItem(Element *parent_element) :
 		if(this->m_parent_element && this->m_parent_element->diagram())
 		{
 			QUndoCommand *undo = new QPropertyUndoCommand(this, "text", old_str, new_str);
-			undo->setText(tr("Éditer un texte d'élément"));
+			undo->setText(tr("Edit an element text"));
 			this->m_parent_element->diagram()->undoStack().push(undo);
 		}
 	});
@@ -1055,7 +1091,7 @@ void DynamicElementTextItem::handlerMouseReleaseEvent(QetGraphicsHandlerItem *ha
 	{
 		auto *undo = new QPropertyUndoCommand(this, "textWidth", QVariant(m_resize_original_width), QVariant(new_width));
 		undo->setAnimated(true, false);
-		undo->setText(tr("Redimensionner un texte d'élément"));
+		undo->setText(tr("Resize an element text"));
 		m_parent_element->diagram()->undoStack().push(undo);
 	}
 }

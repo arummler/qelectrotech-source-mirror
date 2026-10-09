@@ -74,6 +74,21 @@ target_include_directories(tst_darkimagelayers PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_darkimagelayers PRIVATE Qt::Test Qt::Widgets)
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND AND CMAKE_GENERATOR STREQUAL "Ninja")
+  add_test(NAME tst_handlersizeintegration
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/run_handle_size_probe.py
+      --build ${CMAKE_BINARY_DIR} --binary $<TARGET_FILE:qelectrotech>
+      --source ${CMAKE_CURRENT_SOURCE_DIR}/handle_size_probe.cpp
+      --fixture ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/unlinked_contact_label.qet)
+  set_tests_properties(tst_handlersizeintegration PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  add_test(NAME tst_attachedplainpaste
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/run_attached_plain_paste_probe.py
+      --build ${CMAKE_BINARY_DIR} --binary $<TARGET_FILE:qelectrotech>
+      --source ${CMAKE_CURRENT_SOURCE_DIR}/attached_plain_paste_probe.cpp
+      --fixture ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/unlinked_contact_label.qet)
+  set_tests_properties(tst_attachedplainpaste PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
+if(Python3_Interpreter_FOUND AND CMAKE_GENERATOR STREQUAL "Ninja")
   add_test(NAME tst_darkimageintegration
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/run_image_dark_probe.py
       --build ${CMAKE_BINARY_DIR} --binary $<TARGET_FILE:qelectrotech>
@@ -100,6 +115,13 @@ add_test(NAME tst_diagramsortkeys COMMAND tst_diagramsortkeys)
 target_include_directories(tst_diagramsortkeys PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_diagramsortkeys PRIVATE Qt::Test)
 
+# positionorder.h is header-only: the position comparisons behind element
+# renumbering and terminal numbering, as strict weak orderings for std::sort.
+add_executable(tst_positionorder tst_positionorder.cpp)
+target_include_directories(tst_positionorder PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_positionorder PRIVATE Qt::Test Qt::Core)
+add_test(NAME tst_positionorder COMMAND tst_positionorder)
+
 # bordercelllabels.h is header-only too.
 add_executable(tst_bordercelllabels tst_bordercelllabels.cpp)
 add_test(NAME tst_bordercelllabels COMMAND tst_bordercelllabels)
@@ -119,6 +141,13 @@ add_executable(tst_textgrid tst_textgrid.cpp)
 add_test(NAME tst_textgrid COMMAND tst_textgrid)
 target_include_directories(tst_textgrid PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_textgrid PRIVATE Qt::Test)
+
+# foliogrid.h is header-only: the folio grid step as read from the
+# settings, never 0 or negative, so no reader can divide by it or loop on it.
+add_executable(tst_foliogrid tst_foliogrid.cpp)
+target_include_directories(tst_foliogrid PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_foliogrid PRIVATE Qt::Test Qt::Core)
+add_test(NAME tst_foliogrid COMMAND tst_foliogrid)
 
 # textlines.h is header-only: the lines of a text as they are laid out,
 # for the exports that write a text line by line.
@@ -149,12 +178,31 @@ add_test(NAME tst_terminalnamecheck COMMAND tst_terminalnamecheck)
 target_include_directories(tst_terminalnamecheck PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_terminalnamecheck PRIVATE Qt::Test)
 
+# symbolscale.h is header-only: which factors the element editor offers
+# for scaling an element without taking its terminals off the grid.
+add_executable(tst_symbolscale tst_symbolscale.cpp)
+add_test(NAME tst_symbolscale COMMAND tst_symbolscale)
+target_include_directories(tst_symbolscale PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_symbolscale PRIVATE Qt::Test)
+
+# genericdevice.cpp is pure: the generic device wizard's layout, pattern
+# lines, groups and pin numbers, and the symbol it writes.
+add_executable(tst_genericdevice tst_genericdevice.cpp
+  ${QET_DIR}/sources/genericdevice/genericdevice.cpp)
+add_test(NAME tst_genericdevice COMMAND tst_genericdevice)
+set_tests_properties(tst_genericdevice PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+target_include_directories(tst_genericdevice PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_genericdevice PRIVATE Qt::Test Qt::Gui Qt::Xml)
+
 # configprofile.h is header-only: which settings a saved configuration
 # profile carries, and how loading one replaces the live settings.
-add_executable(tst_configprofile tst_configprofile.cpp)
+# borderproperties.cpp: the real writer of the folio size defaults, to check
+# that what it writes falls in the part for new projects.
+add_executable(tst_configprofile tst_configprofile.cpp
+  ${QET_DIR}/sources/borderproperties.cpp)
 add_test(NAME tst_configprofile COMMAND tst_configprofile)
 target_include_directories(tst_configprofile PRIVATE ${QET_DIR}/sources)
-target_link_libraries(tst_configprofile PRIVATE Qt::Test Qt::Gui)
+target_link_libraries(tst_configprofile PRIVATE Qt::Test Qt::Gui Qt::Xml)
 
 # itemgroups.cpp keeps group membership and the selection rule apart from
 # Diagram, so it is tested here on a plain scene of rectangles.
@@ -178,6 +226,14 @@ add_test(NAME tst_textanchor COMMAND tst_textanchor)
 set_tests_properties(tst_textanchor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 target_include_directories(tst_textanchor PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_textanchor PRIVATE Qt::Test Qt::Widgets)
+
+# Shared handle geometry and picking, including fractional sizes.
+add_executable(tst_handlersize tst_handlersize.cpp
+  ${QET_DIR}/sources/QetGraphicsItemModeler/qetgraphicshandleritem.cpp)
+add_test(NAME tst_handlersize COMMAND tst_handlersize)
+set_tests_properties(tst_handlersize PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+target_include_directories(tst_handlersize PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_handlersize PRIVATE Qt::Test Qt::Widgets)
 
 # TextResizeHandles: the corner handles that change the width of a text box,
 # on a plain QGraphicsTextItem with the "textWidth" property QET texts have.
@@ -542,6 +598,18 @@ target_compile_definitions(tst_wiringlistexport PRIVATE
   "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
   "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
 
+# A label formula with ten or more sequential numbers gets the tenth value
+# for %sequ_10 (not the first one and a "0"): the real binary's
+# --export-bom on fixtures/ten_sequential_numbers.qet.
+add_executable(
+  tst_tensequentialnumbers
+  tst_tensequentialnumbers.cpp)
+add_test(NAME tst_tensequentialnumbers COMMAND tst_tensequentialnumbers)
+add_dependencies(tst_tensequentialnumbers qelectrotech)
+target_link_libraries(tst_tensequentialnumbers PRIVATE Qt::Test)
+target_compile_definitions(tst_tensequentialnumbers PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
 # --export-dxf writes a wrapped symbol text line by line, as it is drawn.
 add_executable(
   tst_dxfwrappedtext
@@ -561,6 +629,17 @@ add_test(NAME tst_dxfcurves COMMAND tst_dxfcurves)
 add_dependencies(tst_dxfcurves qelectrotech)
 target_link_libraries(tst_dxfcurves PRIVATE Qt::Test)
 target_compile_definitions(tst_dxfcurves PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
+# A static text with anchor="alignment" has its x at the edge or centre its
+# Halignment selects, not at its left edge (#1251).
+add_executable(
+  tst_statictextanchor
+  tst_statictextanchor.cpp)
+add_test(NAME tst_statictextanchor COMMAND tst_statictextanchor)
+add_dependencies(tst_statictextanchor qelectrotech)
+target_link_libraries(tst_statictextanchor PRIVATE Qt::Test)
+target_compile_definitions(tst_statictextanchor PRIVATE
   "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
 
 # --export-dxf --dxf-blocks: a symbol placed twice is one BLOCK and two
@@ -864,6 +943,18 @@ target_compile_definitions(tst_derivedwireuuid PRIVATE
   "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
   "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
 
+# Symbols sharing one uuid on a folio keep their wires through save and
+# reopen (#1408): nets of examples/Habitat-Schemas_developpes.qet.
+add_executable(
+  tst_sharedsymboluuid
+  tst_sharedsymboluuid.cpp)
+add_test(NAME tst_sharedsymboluuid COMMAND tst_sharedsymboluuid)
+add_dependencies(tst_sharedsymboluuid qelectrotech)
+target_link_libraries(tst_sharedsymboluuid PRIVATE Qt::Test Qt::Xml)
+target_compile_definitions(tst_sharedsymboluuid PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
+  "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
+
 # Element numbering schemes carry an id and elements follow them by it:
 # a legacy file gets stable ids on --resave; through --run, rename, edit,
 # refused removal and undo/redo keep the elements following the scheme.
@@ -875,6 +966,20 @@ if(QET_HAS_SCRIPTING)
   add_dependencies(tst_elementautonumids qelectrotech)
   target_link_libraries(tst_elementautonumids PRIVATE Qt::Test Qt::Xml)
   target_compile_definitions(tst_elementautonumids PRIVATE
+    "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
+    "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
+endif()
+
+# A picture whose saved crop does not match the picture shown (an undone
+# crop, saved before #1310) loads without that crop; a valid crop is kept.
+if(QET_HAS_SCRIPTING)
+  add_executable(
+    tst_imagestalecrop
+    tst_imagestalecrop.cpp)
+  add_test(NAME tst_imagestalecrop COMMAND tst_imagestalecrop)
+  add_dependencies(tst_imagestalecrop qelectrotech)
+  target_link_libraries(tst_imagestalecrop PRIVATE Qt::Test Qt::Gui)
+  target_compile_definitions(tst_imagestalecrop PRIVATE
     "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
     "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
 endif()
@@ -893,6 +998,18 @@ target_compile_definitions(tst_resaveunchanged PRIVATE
   "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
   "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
 
+# A folio's "freeze new elements/conductors" flags, saved as the words
+# "true"/"false", are read back as words: the real binary's --resave on
+# fixtures/folio_freeze_flags.qet, one folio per combination.
+add_executable(
+  tst_foliofreezeflags
+  tst_foliofreezeflags.cpp)
+add_test(NAME tst_foliofreezeflags COMMAND tst_foliofreezeflags)
+add_dependencies(tst_foliofreezeflags qelectrotech)
+target_link_libraries(tst_foliofreezeflags PRIVATE Qt::Test Qt::Xml)
+target_compile_definitions(tst_foliofreezeflags PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
 # Replacing a symbol's definition in a project keeps its terminal uuids, so
 # the wires saved against them still load: TerminalUuids::keep() on its own,
 # then the real binary's --info on an example whose symbols were replaced.
@@ -907,6 +1024,19 @@ target_compile_definitions(tst_terminaluuids PRIVATE
   "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\""
   "QET_EXAMPLES_DIR=\"${QET_DIR}/examples\"")
 
+# Sequential numbers saved the old way, as sequ_1/.../seqhf_1 attributes,
+# are all read: the real binary's --resave on
+# fixtures/legacy_sequential_attributes.qet, whose element and conductor
+# carry only seqhf_1.
+add_executable(
+  tst_legacysequentialattributes
+  tst_legacysequentialattributes.cpp)
+add_test(NAME tst_legacysequentialattributes COMMAND tst_legacysequentialattributes)
+add_dependencies(tst_legacysequentialattributes qelectrotech)
+target_link_libraries(tst_legacysequentialattributes PRIVATE Qt::Test Qt::Xml)
+target_compile_definitions(tst_legacysequentialattributes PRIVATE
+  "QET_TEST_BINARY_PATH=\"$<TARGET_FILE:qelectrotech>\"")
+
 # ConductorProperties::applyChanges() -- the Selection properties panel
 # writes only the fields the user edited.
 add_executable(
@@ -919,6 +1049,19 @@ add_executable(
 add_test(NAME tst_conductorapplychanges COMMAND tst_conductorapplychanges)
 target_include_directories(tst_conductorapplychanges PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_conductorapplychanges PRIVATE Qt::Test Qt::Widgets Qt::Xml pugixml::pugixml)
+
+# ConductorProperties::fromSettings() -- the default conductor width is a
+# decimal and comes back as saved (1.4 used to be read as 0).
+add_executable(
+  tst_conductorsizesetting
+  tst_conductorsizesetting.cpp
+  ${QET_DIR}/sources/conductorproperties.cpp
+  ${QET_DIR}/sources/qet.cpp
+  ${QET_DIR}/sources/qeticons.cpp
+  ${QET_DIR}/sources/shortcutmanager.cpp)
+add_test(NAME tst_conductorsizesetting COMMAND tst_conductorsizesetting)
+target_include_directories(tst_conductorsizesetting PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_conductorsizesetting PRIVATE Qt::Test Qt::Widgets Qt::Xml pugixml::pugixml)
 
 # ConductorMultiEdit -- editing several wires at once in the Selection
 # properties panel: order, which wires an edit reaches, one undo step for
@@ -960,6 +1103,27 @@ add_executable(
 add_test(NAME tst_xrefpos COMMAND tst_xrefpos)
 target_include_directories(tst_xrefpos PRIVATE ${QET_DIR}/sources)
 target_link_libraries(tst_xrefpos PRIVATE Qt::Test Qt::Widgets Qt::Xml pugixml::pugixml)
+
+# BorderProperties::fromXml() -- the project's <border> for new folios:
+# column width and row height are decimals and are read as such.
+add_executable(
+  tst_borderpropertiesxml
+  tst_borderpropertiesxml.cpp
+  ${QET_DIR}/sources/borderproperties.cpp)
+add_test(NAME tst_borderpropertiesxml COMMAND tst_borderpropertiesxml)
+target_include_directories(tst_borderpropertiesxml PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_borderpropertiesxml PRIVATE Qt::Test Qt::Xml)
+
+# Picture files dropped on a folio: which files are taken, the size and
+# pixel limits before a picture is embedded, fitting into the view and the
+# cascade of several pictures.
+add_executable(
+  tst_imagedrop
+  tst_imagedrop.cpp
+  ${QET_DIR}/sources/imagedrop.cpp)
+add_test(NAME tst_imagedrop COMMAND tst_imagedrop)
+target_include_directories(tst_imagedrop PRIVATE ${QET_DIR}/sources)
+target_link_libraries(tst_imagedrop PRIVATE Qt::Test Qt::Gui)
 
 # Qt 6.4.2 writes the attributes of an element in an order that changes from
 # one process to the next, so a project saved twice by two runs of the binary

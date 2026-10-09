@@ -17,6 +17,7 @@
 */
 #include "editorcommands.h"
 #include "../diagram.h"
+#include "symbolscale.h"
 
 /**
 	@brief ElementEditionCommand::ElementEditionCommand
@@ -105,7 +106,7 @@ CutPartsCommand::CutPartsCommand(
 ) :
 	DeletePartsCommand(scene, parts.toVector(), parent)
 {
-	setText(QString(QObject::tr("couper des parties", "undo caption")));
+	setText(QString(QObject::tr("cut parts", "undo caption")));
 }
 
 /// Destructeur
@@ -127,7 +128,7 @@ MovePartsCommand::MovePartsCommand(
 	const QList<QGraphicsItem *>& parts,
 	QUndoCommand *parent
 ) :
-	ElementEditionCommand(QObject::tr("déplacement", "undo caption"), scene, nullptr, parent),
+	ElementEditionCommand(QObject::tr("move", "undo caption"), scene, nullptr, parent),
 	movement(m),
 	first_redo(true)
 {
@@ -169,7 +170,7 @@ ChangeNamesCommand::ChangeNamesCommand(
 	const NamesList &after,
 	QUndoCommand *parent
 ) :
-	ElementEditionCommand(QObject::tr("modification noms", "undo caption"), element_scene, nullptr, parent),
+	ElementEditionCommand(QObject::tr("modify names", "undo caption"), element_scene, nullptr, parent),
 	names_before(before),
 	names_after(after)
 {
@@ -218,16 +219,16 @@ ChangeZValueCommand::ChangeZValueCommand(
 
 	// choisit le nom en fonction du traitement
 	if (m_option == QET::BringForward) {
-		setText(QObject::tr("amener au premier plan", "undo caption"));
+		setText(QObject::tr("bring forward", "undo caption"));
 		applyBringForward(items_list);
 	} else if (m_option == QET::Raise) {
-		setText(QObject::tr("rapprocher", "undo caption"));
+		setText(QObject::tr("raise", "undo caption"));
 		applyRaise(items_list);
 	} else if (m_option == QET::Lower) {
-		setText(QObject::tr("éloigner", "undo caption"));
+		setText(QObject::tr("lower", "undo caption"));
 		applyLower(items_list);
 	} else if (m_option == QET::SendBackward) {
-		setText(QObject::tr("envoyer au fond", "undo caption"));
+		setText(QObject::tr("Send to back", "undo caption"));
 		applySendBackward(items_list);
 	}
 }
@@ -330,7 +331,7 @@ void ChangeZValueCommand::applySendBackward(const QList<QGraphicsItem *> &items_
 	@param parent QUndoCommand parent
 */
 ChangeInformationsCommand::ChangeInformationsCommand(ElementScene *elmt, const QString &old_infos, const QString &new_infos, QUndoCommand *parent) :
-	ElementEditionCommand(QObject::tr("modification informations complementaires", "undo caption"), elmt, nullptr, parent),
+	ElementEditionCommand(QObject::tr("Modification complementary information", "undo caption"), elmt, nullptr, parent),
 	old_informations_(old_infos),
 	new_informations_(new_infos)
 {
@@ -462,9 +463,9 @@ void ScalePartsCommand::scale(const QRectF &before, const QRectF &after) {
 void ScalePartsCommand::adjustText()
 {
 	if (scaled_primitives_.count() == 1) {
-		setText(QObject::tr("redimensionnement %1", "undo caption -- %1 is the resized primitive type name").arg(scaled_primitives_.first() -> name()));
+		setText(QObject::tr("scale %1", "undo caption -- %1 is the resized primitive type name").arg(scaled_primitives_.first() -> name()));
 	} else {
-		setText(QObject::tr("redimensionnement de %1 primitives", "undo caption -- %1 always > 1").arg(scaled_primitives_.count()));
+		setText(QObject::tr("scale %1primitives", "undo caption -- %1 always > 1").arg(scaled_primitives_.count()));
 	}
 }
 
@@ -484,7 +485,7 @@ changeElementDataCommand::changeElementDataCommand(ElementScene *scene,
 	m_old(old_data),
 	m_new(new_data)
 {
-	setText(QObject::tr("Modifier les propriétées de l'élément"));
+	setText(QObject::tr("Modify item properties"));
 }
 
 void changeElementDataCommand::undo() {
@@ -498,7 +499,7 @@ void changeElementDataCommand::redo() {
 }
 
 RotateElementsCommand::RotateElementsCommand(ElementScene *scene, QUndoCommand *parent) :
-ElementEditionCommand(QObject::tr("Pivoter la selection", "undo caption"), scene, nullptr, parent)
+ElementEditionCommand(QObject::tr("Rotate the selection", "undo caption"), scene, nullptr, parent)
 {
 	m_items = scene->selectedItems();
 }
@@ -603,7 +604,7 @@ void RotateElementsCommand::redo()
 
 
 RotateFineElementsCommand::RotateFineElementsCommand(ElementScene *scene, QUndoCommand *parent) :
-ElementEditionCommand(QObject::tr("Pivoter la selection", "undo caption"), scene, nullptr, parent)
+ElementEditionCommand(QObject::tr("Rotate the selection", "undo caption"), scene, nullptr, parent)
 {
 	m_items = scene->selectedItems();
 }
@@ -689,7 +690,7 @@ static QPointF selectionCenter(const QList<QGraphicsItem *> &items)
 }
 
 MirrorElementsCommand::MirrorElementsCommand(ElementScene *scene, QUndoCommand *parent) :
-ElementEditionCommand(QObject::tr("Miroir de sélection", "undo caption"), scene, nullptr, parent)
+ElementEditionCommand(QObject::tr("Mirror selection", "undo caption"), scene, nullptr, parent)
 {
 	m_items = scene->selectedItems();
 	m_axis_x = selectionCenter(m_items).x();
@@ -738,7 +739,7 @@ void MirrorElementsCommand::undo()
 
 
 FlipElementsCommand::FlipElementsCommand(ElementScene *scene, QUndoCommand *parent) :
-ElementEditionCommand(QObject::tr("Retourner la sélection", "undo caption"), scene, nullptr, parent)
+ElementEditionCommand(QObject::tr("Flip selection", "undo caption"), scene, nullptr, parent)
 {
 	m_items = scene->selectedItems();
 	m_axis_y = selectionCenter(m_items).y();
@@ -784,4 +785,98 @@ void FlipElementsCommand::redo()
 void FlipElementsCommand::undo()
 {
 	redo();
+}
+
+/**
+	@brief ScaleElementCommand::ScaleElementCommand
+	@param scene : the element to scale
+	@param factor : scale factor, applied about the hotspot
+	@param scale_text : also scale font sizes
+	@param parent : parent undo command
+*/
+ScaleElementCommand::ScaleElementCommand(ElementScene *scene,
+										 qreal factor,
+										 bool scale_text,
+										 QUndoCommand *parent) :
+	ElementEditionCommand(QObject::tr("scale the element", "undo caption"),
+						  scene, nullptr, parent),
+	m_factor(factor)
+{
+	const auto scaledFont = [factor, scale_text](QFont font) {
+		if (scale_text) {
+			if (font.pointSizeF() > 0) {
+				font.setPointSize(SymbolScale::scaledFontSize(font.pointSizeF(), factor));
+			} else if (font.pixelSize() > 0) {
+				font.setPixelSize(SymbolScale::scaledFontSize(font.pixelSize(), factor));
+			}
+		}
+		return font;
+	};
+
+	const auto parts = scene->primitives();
+	for (CustomElementPart *part : parts)
+	{
+		QGraphicsItem *item = part->toItem();
+			//Font before position: changing the font can move a text
+			//to keep its alignment.
+		if (auto text = qgraphicsitem_cast<PartText *>(item)) {
+			addChange(text, "font", scaledFont(text->font()));
+			addChange(text, "pos", text->pos() * factor);
+		}
+		else if (auto field = qgraphicsitem_cast<PartDynamicTextField *>(item)) {
+			addChange(field, "font", scaledFont(field->font()));
+			if (field->textWidth() > 0) {
+				addChange(field, "textWidth", field->textWidth() * factor);
+			}
+			addChange(field, "pos", field->pos() * factor);
+		}
+		else if (auto terminal = qgraphicsitem_cast<PartTerminal *>(item)) {
+			addChange(terminal, "label_font", scaledFont(terminal->labelFont()));
+			addChange(terminal, "label_pos", terminal->labelPos() * factor);
+			addChange(terminal, "pos", terminal->pos() * factor);
+		}
+		else {
+			m_geometry_parts << part;
+			if (auto line = qgraphicsitem_cast<PartLine *>(item)) {
+				addChange(line, "length1", line->firstEndLength() * factor);
+				addChange(line, "length2", line->secondEndLength() * factor);
+			}
+		}
+	}
+}
+
+void ScaleElementCommand::addChange(QObject *object, const char *name, const QVariant &after)
+{
+	m_changes << PropertyChange{object, name, object->property(name), after};
+}
+
+/**
+	@brief ScaleElementCommand::scaleGeometry
+	Scale the drawn parts about the hotspot, from \a from times their
+	original size to \a to times it.
+*/
+void ScaleElementCommand::scaleGeometry(qreal from, qreal to)
+{
+	const QRectF before(0, 0, from, from);
+	const QRectF after(0, 0, to, to);
+	for (CustomElementPart *part : std::as_const(m_geometry_parts)) {
+		part->startUserTransformation(before);
+		part->handleUserTransformation(before, after);
+	}
+}
+
+void ScaleElementCommand::undo()
+{
+	scaleGeometry(m_factor, 1);
+	for (const PropertyChange &change : std::as_const(m_changes)) {
+		change.object->setProperty(change.name.constData(), change.before);
+	}
+}
+
+void ScaleElementCommand::redo()
+{
+	scaleGeometry(1, m_factor);
+	for (const PropertyChange &change : std::as_const(m_changes)) {
+		change.object->setProperty(change.name.constData(), change.after);
+	}
 }

@@ -19,6 +19,7 @@
 #include "../autoNum/ui/pastenumberingimport.h"
 
 #include "../diagram.h"
+#include "../foliogrid.h"
 #include "../diagramcommands.h"
 #include "../qetapp.h"
 #include "../qetdiagrameditor.h"
@@ -108,10 +109,8 @@
 	}
 	const QPointF top_left = items_rect.topLeft();
 	QSettings settings;
-	const int xGrid = settings.value(QStringLiteral("diagrameditor/Xgrid"),
-					  Diagram::xGrid).toInt();
-	const int yGrid = settings.value(QStringLiteral("diagrameditor/Ygrid"),
-					  Diagram::yGrid).toInt();
+	const int xGrid = FolioGrid::step(settings.value(FolioGrid::x_key), Diagram::xGrid);
+	const int yGrid = FolioGrid::step(settings.value(FolioGrid::y_key), Diagram::yGrid);
 	const auto snapGrid = [xGrid, yGrid](const QPointF &p) -> QPointF {
 		return QPointF(
 			qRound(p.x() / xGrid) * xGrid,
@@ -271,7 +270,7 @@ void DiagramEventAddPaste::showHint()
 {
 	if (m_status_bar) {
 		m_status_bar->showMessage(
-			tr("Cliquez pour poser le collage, Échap ou clic droit pour annuler",
+			tr("Click to place the pasted content, Esc or right-click to cancel",
 			   "status bar tip while positioning a paste"));
 	}
 }
@@ -287,10 +286,8 @@ void DiagramEventAddPaste::showHint()
 void DiagramEventAddPaste::moveTo(const QPointF &scene_pos)
 {
 	QSettings settings;
-	const int xGrid = settings.value(QStringLiteral("diagrameditor/Xgrid"),
-					  Diagram::xGrid).toInt();
-	const int yGrid = settings.value(QStringLiteral("diagrameditor/Ygrid"),
-					  Diagram::yGrid).toInt();
+	const int xGrid = FolioGrid::step(settings.value(FolioGrid::x_key), Diagram::xGrid);
+	const int yGrid = FolioGrid::step(settings.value(FolioGrid::y_key), Diagram::yGrid);
 
 	const auto snapGrid = [xGrid, yGrid](const QPointF &p) -> QPointF {
 		return QPointF(

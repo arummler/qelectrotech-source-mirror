@@ -53,6 +53,7 @@ static const QString plcTerminalKeys[] = {
 	QETInformation::ELMT_PLC_T4
 };
 #include "../qetxml.h"
+#include "../positionorder.h"
 #include "../qetversion.h"
 #include "qgraphicsitemutility.h"
 #include <QDebug>
@@ -672,9 +673,9 @@ bool Element::buildFromXml(const QDomElement &xml_def_elmt, int *state)
 		&& QetVersion::currentVersion() < elmt_version)
 	{
 		std::cerr << qPrintable(
-						 QObject::tr("Avertissement : l'élément "
-									 " a été enregistré avec une version"
-									 " ultérieure de QElectroTech.")
+						 QObject::tr("Warning: the element has been "
+									 "saved with a more recent version "
+									 "of QElectroTech.")
 						 ) << std::endl;
 	}
 
@@ -1055,7 +1056,7 @@ bool Element::fromXml(QDomElement &e,
 			|| e.hasAttribute(QStringLiteral("seqt_1"))
 			|| e.hasAttribute(QStringLiteral("seqtf_1"))
 			|| e.hasAttribute(QStringLiteral("seqh_1"))
-			|| e.hasAttribute(QStringLiteral("sequf_1")))
+			|| e.hasAttribute(QStringLiteral("seqhf_1")))
 		ElementXmlRetroCompatibility::loadSequential(e, this);
 	else
 		m_autoNum_seq.fromXml(e.firstChildElement(QStringLiteral("sequentialNumbers")));
@@ -1934,9 +1935,7 @@ bool comparPos(const Element *elmt1, const Element *elmt2)
 	if (a != b)
 		return a<b;
 	//In last compare the line, if line is egal, return sorted by row in real pos
-	if (elmt1->pos().x() == elmt2->pos().x())
-		return elmt1->y() <= elmt2->pos().y();
-	return elmt1->pos().x() <= elmt2->pos().x();
+	return PositionOrder::xThenY(elmt1->pos(), elmt2->pos());
 }
 
 /**
@@ -2111,7 +2110,7 @@ void Element::setUpFormula(bool code_letter, QUndoCommand *parent_undo)
 		else
 		{
 			auto *undo = new SetAutoNumContextCommand(setter, element_currentAutoNum, nc, new_context);
-			undo->setText(tr("Numéroter automatiquement un élément", "undo caption"));
+			undo->setText(tr("Automatically number an element", "undo caption"));
 			diagram()->undoStack().push(undo);
 		}
 
@@ -2386,10 +2385,10 @@ void Element::drawPlcTable(QPainter *painter)
 	// Build header labels
 	QMap<int, QString> headers;
 	headers[COL_TYPE]     = QObject::tr("Type");
-	headers[COL_ADDRESS]  = QObject::tr("Adresse");
-	headers[COL_FUNCTION] = QObject::tr("Fonction");
-	headers[COL_COMMENT]  = QObject::tr("Commentaire");
-	headers[COL_CROSSREF] = QObject::tr("Réf. croisée");
+	headers[COL_ADDRESS]  = QObject::tr("Address");
+	headers[COL_FUNCTION] = QObject::tr("Function");
+	headers[COL_COMMENT]  = QObject::tr("Annotation");
+	headers[COL_CROSSREF] = QObject::tr("Cross-reference");
 
 	// Override with custom column names
 	if (!plc_data.columnNames.isEmpty()) {

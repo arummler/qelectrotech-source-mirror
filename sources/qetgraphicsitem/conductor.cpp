@@ -1142,7 +1142,7 @@ bool Conductor::fromXml(QDomElement &dom_element)
 	pr.fromXml(dom_element);
 
 		//Load Sequential Values
-	if (dom_element.hasAttribute("sequ_1") || dom_element.hasAttribute("sequf_1") || dom_element.hasAttribute("seqt_1") || dom_element.hasAttribute("seqtf_1") || dom_element.hasAttribute("seqh_1") || dom_element.hasAttribute("sequf_1"))
+	if (dom_element.hasAttribute("sequ_1") || dom_element.hasAttribute("sequf_1") || dom_element.hasAttribute("seqt_1") || dom_element.hasAttribute("seqtf_1") || dom_element.hasAttribute("seqh_1") || dom_element.hasAttribute("seqhf_1"))
 		ConductorXmlRetroCompatibility::loadSequential(dom_element, this);
 	else
 		m_autoNum_seq.fromXml(dom_element.firstChildElement("sequentialNumbers"));
@@ -1162,11 +1162,16 @@ bool Conductor::fromXml(QDomElement &dom_element)
 	@param table_adr_id :
 	Hash stockant les correspondances entre les ids des
 	bornes dans le document XML et leur adresse en memoire
+	@param shared_uuids : uuids carried by more than one symbol of the
+	folio. An end on such a symbol is written by its terminal id, as for a
+	terminal without uuid: by uuid it would reopen on the first symbol
+	carrying it (#1408).
 	@return Un element XML representant le conducteur
 */
 QDomElement Conductor::toXml(QDomDocument &dom_document,
 				 QHash<Terminal *,
-				 int> &table_adr_id) const
+				 int> &table_adr_id,
+				 const QSet<QUuid> &shared_uuids) const
 {
 	QDomElement dom_element = dom_document.createElement("conductor");
 
@@ -1176,7 +1181,8 @@ QDomElement Conductor::toXml(QDomDocument &dom_document,
 	dom_element.setAttribute("y", QString::number(pos().y()));
 	
 	// Terminal is uniquely identified by the uuid of the terminal and the element
-	if (terminal1->uuid().isNull()) {
+	if (terminal1->uuid().isNull()
+		|| shared_uuids.contains(terminal1->parentElement()->uuid())) {
 		// legacy method to identify the terminal
 		dom_element.setAttribute("terminal1", table_adr_id.value(terminal1)); // for backward compatibility
 	} else {
@@ -1192,7 +1198,8 @@ QDomElement Conductor::toXml(QDomDocument &dom_document,
 		dom_element.setAttribute("terminalname1", terminal1->name());
 	}
 
-	if (terminal2->uuid().isNull()) {
+	if (terminal2->uuid().isNull()
+		|| shared_uuids.contains(terminal2->parentElement()->uuid())) {
 		// legacy method to identify the terminal
 		dom_element.setAttribute("terminal2", table_adr_id.value(terminal2)); // for backward compatibility
 	} else {
@@ -1869,12 +1876,12 @@ void Conductor::displayedTextChanged()
 	new_value.setValue(new_properties);
 
 
-	QUndoCommand *undo = new QUndoCommand(tr("Modifier les propriétés d'un conducteur", "undo caption"));
+	QUndoCommand *undo = new QUndoCommand(tr("Edit conductor properties", "undo caption"));
 	new QPropertyUndoCommand(this, "properties", old_value, new_value, undo);
 
 	if (!relatedPotentialConductors().isEmpty())
 	{
-		undo->setText(tr("Modifier les propriétés de plusieurs conducteurs", "undo caption"));
+		undo->setText(tr("Edit the properties of several conductors", "undo caption"));
 
 		foreach (Conductor *potential_conductor, relatedPotentialConductors())
 		{
